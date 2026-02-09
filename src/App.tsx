@@ -23,6 +23,11 @@ $sum_(i=1)^n i = n(n+1)/2$
 #align(center)[#text(size: 22pt)[Happy typesetting.]]
 `
 
+const PREVIEW_LIMIT_PAGES = 3
+const PREVIEW_PAGE_WIDTH_PT = 780
+const PREVIEW_PAGE_HEIGHT_PT = 1080
+const AUTO_PREVIEW_LIMIT = 20000
+
 type PreviewState = 'idle' | 'rendering' | 'error'
 type SaveState = 'saved' | 'saving' | 'dirty'
 
@@ -44,6 +49,7 @@ function App() {
   const [previewState, setPreviewState] = useState<PreviewState>('idle')
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [saveState, setSaveState] = useState<SaveState>('saved')
+  const [autoPreview, setAutoPreview] = useState(true)
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [sidebarWidth, setSidebarWidth] = useState(240)
   const [editorWidth, setEditorWidth] = useState(520)
@@ -55,6 +61,10 @@ function App() {
   const suppressSaveRef = useRef(false)
   const renderTokenRef = useRef(0)
   const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const renderTimerRef = useRef<number | null>(null)
+  const renderInProgressRef = useRef(false)
+  const pendingRenderRef = useRef(false)
+  const latestContentRef = useRef('')
 
   const activeFile = useMemo(
     () => files.find((file) => file.id === activeFileId) ?? null,
@@ -145,7 +155,13 @@ function App() {
     return () => window.clearTimeout(handle)
   }, [activeContent, activeFileId, activeFile?.name])
 
-  useEffect(() => {
+  const queueRender = (immediate: boolean) => {
+    latestContentRef.current = activeContent
+
+    if (renderTimerRef.current) {
+      window.clearTimeout(renderTimerRef.current)
+    }
+
     if (!activeContent) {
       setPreviewSvg('')
       setPreviewState('idle')
@@ -153,39 +169,100 @@ function App() {
       return
     }
 
-    setPreviewState('rendering')
-    const token = ++renderTokenRef.current
+    const scheduleRender = () => {
+      const run = async () => {
+        if (renderInProgressRef.current) {
+          pendingRenderRef.current = true
+          return
+        }
 
-    const handle = window.setTimeout(async () => {
-      try {
-        const svg = await renderTypstSvg(activeContent)
-        if (token !== renderTokenRef.current) {
-          return
-        }
-        setPreviewSvg(svg)
-        setPreviewState('idle')
-        setPreviewError(null)
-      } catch (error) {
-        if (token !== renderTokenRef.current) {
-          return
-        }
-        setPreviewState('error')
-        setPreviewSvg('')
-        if (error instanceof Error) {
-          const details = [error.message, error.stack].filter(Boolean).join('\n')
-          setPreviewError(details || 'Typst render failed')
-        } else {
-          try {
-            setPreviewError(JSON.stringify(error, null, 2))
-          } catch {
-            setPreviewError(String(error))
+        renderInProgressRef.current = true
+        pendingRenderRef.current = false
+        setPreviewState('rendering')
+        const token = ++renderTokenRef.current
+        const content = latestContentRef.current
+
+        try {
+          const svg = await renderTypstSvg(content, {
+            window: {
+              lo: { x: 0, y: 0 },
+              hi: {
+                x: PREVIEW_PAGE_WIDTH_PT,
+                y: PREVIEW_PAGE_HEIGHT_PT * PREVIEW_LIMIT_PAGES,
+              },
+            },
+          })
+          if (token !== renderTokenRef.current) {
+            return
+          }
+          setPreviewSvg(svg)
+          setPreviewState('idle')
+          setPreviewError(null)
+        } catch (error) {
+          if (token !== renderTokenRef.current) {
+            return
+          }
+          setPreviewState('error')
+          setPreviewSvg('')
+          if (error instanceof Error) {
+            const details = [error.message, error.stack]
+              .filter(Boolean)
+              .join('\n')
+            setPreviewError(details || 'Typst render failed')
+          } else {
+            try {
+              setPreviewError(JSON.stringify(error, null, 2))
+            } catch {
+              setPreviewError(String(error))
+            }
+          }
+        } finally {
+          renderInProgressRef.current = false
+          if (pendingRenderRef.current) {
+            pendingRenderRef.current = false
+            scheduleRender()
           }
         }
       }
-    }, 250)
 
-    return () => window.clearTimeout(handle)
-  }, [activeContent])
+      const isLarge = activeContent.length > 15000
+      if (typeof window.requestIdleCallback === 'function' && isLarge) {
+        window.requestIdleCallback(() => {
+          void run()
+        })
+      } else {
+        void run()
+      }
+    }
+
+    if (immediate) {
+      scheduleRender()
+      return
+    }
+
+    const delay = activeContent.length > 15000 ? 1200 : 400
+    renderTimerRef.current = window.setTimeout(scheduleRender, delay)
+  }
+
+  useEffect(() => {
+    if (!autoPreview) {
+      return
+    }
+
+    queueRender(false)
+
+    return () => {
+      if (renderTimerRef.current) {
+        window.clearTimeout(renderTimerRef.current)
+      }
+    }
+  }, [activeContent, autoPreview])
+
+  useEffect(() => {
+    if (autoPreview && activeContent.length > AUTO_PREVIEW_LIMIT) {
+      setAutoPreview(false)
+    }
+  }, [activeContent, autoPreview])
 
   const openFile = (file: StoredFile) => {
     suppressSaveRef.current = true
@@ -284,13 +361,15 @@ function App() {
       ? 'Rendering preview'
       : previewState === 'error'
         ? 'Preview error'
-        : 'Preview ready'
+        : `Preview ready (first ${PREVIEW_LIMIT_PAGES} pages)`
 
   const clampZoom = (value: number) => Math.min(2, Math.max(0.5, value))
 
   const handleZoomIn = () => setZoom((current) => clampZoom(current + 0.1))
   const handleZoomOut = () => setZoom((current) => clampZoom(current - 0.1))
   const handleZoomReset = () => setZoom(1)
+
+  const handleRenderOnce = () => queueRender(true)
 
   const startResize = (mode: 'sidebar' | 'editor', startX: number) => {
     const workspace = workspaceRef.current
@@ -501,6 +580,16 @@ function App() {
               <span>{previewLabel}</span>
             </div>
             <div className="pane-actions">
+              <button
+                className="ghost"
+                type="button"
+                onClick={() => setAutoPreview((prev) => !prev)}
+              >
+                {autoPreview ? 'Auto' : 'Manual'}
+              </button>
+              <button className="ghost" type="button" onClick={handleRenderOnce}>
+                Render
+              </button>
               <button
                 className="icon-button"
                 type="button"
