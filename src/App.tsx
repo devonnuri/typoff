@@ -382,7 +382,6 @@ function App() {
     const handles = isSidebarOpen ? handleWidth * 2 : handleWidth
     const initialSidebar = sidebarWidth
     const initialEditor = editorWidth
-    const initialPreview = previewWidth
     const minSidebar = 180
     const minPane = 320
 
