@@ -28,6 +28,28 @@
   font-size: 0.75rem;
   cursor: pointer;
 }
+.icon-button {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #ffffff;
+  background: transparent;
+  color: #ffffff;
+  padding: 0;
+  cursor: pointer;
+}
+
+.icon-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 .ghost:disabled {
   opacity: 0.4;
@@ -38,7 +60,7 @@
   flex: 1;
   display: grid;
   gap: 0;
-  padding: 1.5rem;
+  padding: 0;
   align-items: stretch;
   height: 100%;
 }

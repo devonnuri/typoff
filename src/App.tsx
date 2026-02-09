@@ -171,9 +171,16 @@ function App() {
         }
         setPreviewState('error')
         setPreviewSvg('')
-        setPreviewError(
-          error instanceof Error ? error.message : 'Typst render failed',
-        )
+        if (error instanceof Error) {
+          const details = [error.message, error.stack].filter(Boolean).join('\n')
+          setPreviewError(details || 'Typst render failed')
+        } else {
+          try {
+            setPreviewError(JSON.stringify(error, null, 2))
+          } catch {
+            setPreviewError(String(error))
+          }
+        }
       }
     }, 250)
 
@@ -358,8 +365,21 @@ function App() {
               <span className="file-count">{files.length}</span>
             </div>
             <div className="sidebar-actions">
-              <button className="primary" onClick={createFile} type="button">
-                New file
+              <button
+                className="icon-button"
+                onClick={createFile}
+                type="button"
+                aria-label="New file"
+                title="New file"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M12 5v14M5 12h14"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="square"
+                  />
+                </svg>
               </button>
               <button
                 className="ghost"
@@ -482,12 +502,21 @@ function App() {
             </div>
             <div className="pane-actions">
               <button
-                className="ghost"
+                className="icon-button"
                 type="button"
                 onClick={handleZoomOut}
                 disabled={zoom <= 0.5}
+                aria-label="Zoom out"
+                title="Zoom out"
               >
-                Zoom out
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M5 12h14"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="square"
+                  />
+                </svg>
               </button>
               <button
                 className="ghost"
@@ -497,12 +526,21 @@ function App() {
                 {Math.round(zoom * 100)}%
               </button>
               <button
-                className="ghost"
+                className="icon-button"
                 type="button"
                 onClick={handleZoomIn}
                 disabled={zoom >= 2}
+                aria-label="Zoom in"
+                title="Zoom in"
               >
-                Zoom in
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M12 5v14M5 12h14"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="square"
+                  />
+                </svg>
               </button>
             </div>
           </div>
