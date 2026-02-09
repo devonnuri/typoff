@@ -44,11 +44,17 @@ function App() {
   const [previewState, setPreviewState] = useState<PreviewState>('idle')
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [saveState, setSaveState] = useState<SaveState>('saved')
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true)
+  const [sidebarWidth, setSidebarWidth] = useState(240)
+  const [editorWidth, setEditorWidth] = useState(520)
+  const [previewWidth, setPreviewWidth] = useState(520)
+  const [zoom, setZoom] = useState(1)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
 
   const suppressSaveRef = useRef(false)
   const renderTokenRef = useRef(0)
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
 
   const activeFile = useMemo(
     () => files.find((file) => file.id === activeFileId) ?? null,
@@ -91,6 +97,24 @@ function App() {
       isMounted = false
     }
   }, [])
+
+  useEffect(() => {
+    const workspace = workspaceRef.current
+    if (!workspace) {
+      return
+    }
+
+    const handleWidth = 8
+    const total = workspace.clientWidth
+    const sidebar = isSidebarOpen ? sidebarWidth : 0
+    const handles = isSidebarOpen ? handleWidth * 2 : handleWidth
+    const remaining = Math.max(total - sidebar - handles, 0)
+    const nextEditor = Math.max(360, Math.floor(remaining * 0.55))
+    const nextPreview = Math.max(360, remaining - nextEditor)
+
+    setEditorWidth(nextEditor)
+    setPreviewWidth(nextPreview)
+  }, [isSidebarOpen])
 
   useEffect(() => {
     if (!activeFileId) {
@@ -248,39 +272,103 @@ function App() {
     }
   }
 
+  const previewLabel =
+    previewState === 'rendering'
+      ? 'Rendering preview'
+      : previewState === 'error'
+        ? 'Preview error'
+        : 'Preview ready'
+
+  const clampZoom = (value: number) => Math.min(2, Math.max(0.5, value))
+
+  const handleZoomIn = () => setZoom((current) => clampZoom(current + 0.1))
+  const handleZoomOut = () => setZoom((current) => clampZoom(current - 0.1))
+  const handleZoomReset = () => setZoom(1)
+
+  const startResize = (mode: 'sidebar' | 'editor', startX: number) => {
+    const workspace = workspaceRef.current
+    if (!workspace) {
+      return
+    }
+
+    const handleWidth = 8
+    const total = workspace.clientWidth
+    const handles = isSidebarOpen ? handleWidth * 2 : handleWidth
+    const initialSidebar = sidebarWidth
+    const initialEditor = editorWidth
+    const initialPreview = previewWidth
+    const minSidebar = 180
+    const minPane = 320
+
+    const onMove = (event: MouseEvent) => {
+      const delta = event.clientX - startX
+
+      if (mode === 'sidebar') {
+        const nextSidebar = Math.min(
+          Math.max(initialSidebar + delta, minSidebar),
+          total - handles - minPane * 2,
+        )
+        const remaining = total - nextSidebar - handles
+        const maxEditor = remaining - minPane
+        const nextEditor = Math.min(initialEditor, maxEditor)
+        const nextPreview = remaining - nextEditor
+
+        setSidebarWidth(nextSidebar)
+        setEditorWidth(nextEditor)
+        setPreviewWidth(nextPreview)
+        return
+      }
+
+      const remaining = total - (isSidebarOpen ? sidebarWidth : 0) - handles
+      const nextEditor = Math.min(
+        Math.max(initialEditor + delta, minPane),
+        remaining - minPane,
+      )
+      const nextPreview = remaining - nextEditor
+
+      setEditorWidth(nextEditor)
+      setPreviewWidth(nextPreview)
+    }
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <div className="brand-mark">T</div>
-          <div>
-            <p className="brand-title">Typoff</p>
-            <p className="brand-subtitle">Offline Typst Studio</p>
-          </div>
-        </div>
-        <div className="topbar-actions">
-          <button className="primary" onClick={createFile} type="button">
-            New file
-          </button>
-          <div className="status">
-            <span>{saveLabel}</span>
-            <span>|</span>
-            <span>
-              {previewState === 'rendering'
-                ? 'Rendering preview'
-                : previewState === 'error'
-                  ? 'Preview error'
-                  : 'Preview ready'}
-            </span>
-          </div>
-        </div>
-      </header>
-
-      <div className="workspace">
-        <aside className="sidebar">
+      <div
+        className="workspace"
+        ref={workspaceRef}
+        style={{
+          gridTemplateColumns: isSidebarOpen
+            ? `${sidebarWidth}px 8px ${editorWidth}px 8px ${previewWidth}px`
+            : `${editorWidth}px 8px ${previewWidth}px`,
+        }}
+      >
+        {isSidebarOpen ? (
+          <aside className="sidebar">
           <div className="sidebar-header">
-            <h2>Files</h2>
-            <span>{files.length}</span>
+            <div>
+              <h2>Files</h2>
+              <span className="file-count">{files.length}</span>
+            </div>
+            <div className="sidebar-actions">
+              <button className="primary" onClick={createFile} type="button">
+                New file
+              </button>
+              <button
+                className="ghost"
+                onClick={() => setIsSidebarOpen(false)}
+                type="button"
+              >
+                Hide
+              </button>
+            </div>
           </div>
           <div className="file-list">
             {files.map((file) => (
@@ -339,11 +427,31 @@ function App() {
             ))}
           </div>
         </aside>
+        ) : null}
+
+        {isSidebarOpen ? (
+          <div
+            className="resize-handle"
+            onMouseDown={(event) => startResize('sidebar', event.clientX)}
+            role="separator"
+            aria-label="Resize file browser"
+          />
+        ) : null}
 
         <section className="editor-pane">
           <div className="pane-header">
-            <h2>Editor</h2>
-            <span>{activeFile?.name ?? 'No file selected'}</span>
+            <div className="pane-title">
+              <button
+                className="ghost"
+                type="button"
+                onClick={() => setIsSidebarOpen((prev) => !prev)}
+              >
+                {isSidebarOpen ? 'Hide files' : 'Show files'}
+              </button>
+              <h2>Editor</h2>
+              <span>{activeFile?.name ?? 'No file selected'}</span>
+            </div>
+            <span className="pane-status">{saveLabel}</span>
           </div>
           <div className="pane-body">
             {activeFile ? (
@@ -359,10 +467,44 @@ function App() {
           </div>
         </section>
 
+        <div
+          className="resize-handle"
+          onMouseDown={(event) => startResize('editor', event.clientX)}
+          role="separator"
+          aria-label="Resize editor and preview"
+        />
+
         <section className="preview-pane">
           <div className="pane-header">
-            <h2>Preview</h2>
-            <span>Live Typst render</span>
+            <div className="pane-title">
+              <h2>Preview</h2>
+              <span>{previewLabel}</span>
+            </div>
+            <div className="pane-actions">
+              <button
+                className="ghost"
+                type="button"
+                onClick={handleZoomOut}
+                disabled={zoom <= 0.5}
+              >
+                Zoom out
+              </button>
+              <button
+                className="ghost"
+                type="button"
+                onClick={handleZoomReset}
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                className="ghost"
+                type="button"
+                onClick={handleZoomIn}
+                disabled={zoom >= 2}
+              >
+                Zoom in
+              </button>
+            </div>
           </div>
           <div className="pane-body preview-body">
             {previewState === 'error' ? (
@@ -372,9 +514,17 @@ function App() {
               </div>
             ) : previewSvg ? (
               <div
-                className="preview-surface"
-                dangerouslySetInnerHTML={{ __html: previewSvg }}
-              />
+                className="preview-zoom"
+                style={{
+                  transform: `scale(${zoom})`,
+                  transformOrigin: 'top left',
+                }}
+              >
+                <div
+                  className="preview-surface"
+                  dangerouslySetInnerHTML={{ __html: previewSvg }}
+                />
+              </div>
             ) : (
               <div className="empty-state">
                 <p>Your Typst preview will appear here.</p>
