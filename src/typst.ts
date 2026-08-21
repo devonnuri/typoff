@@ -1,39 +1,44 @@
 import type { TypstDiagnostic, TypstWorkspace } from './typstWorkspace'
+import type { TypstPageInfo } from './virtualPreview'
 
-type Rect = {
-  lo: { x: number; y: number }
-  hi: { x: number; y: number }
-}
-
-export type RenderOptions = {
-  window?: Rect
-}
-
-export type TypstRenderResult = {
-  svg: string
+export type TypstCompileResult = {
+  documentId: string | null
+  pages: TypstPageInfo[]
   diagnostics: TypstDiagnostic[]
 }
 
-type RenderRequest = {
-  id: number
-  type: 'render'
-  workspace: TypstWorkspace
-  options: RenderOptions
+export type TypstPageResult = {
+  documentId: string
+  pageIndex: number
+  svg: string
 }
 
-type RenderResponse =
-  | ({ id: number; type: 'result' } & TypstRenderResult)
+type TypstWorkerRequestBody =
+  | { type: 'compile'; workspace: TypstWorkspace }
+  | {
+      type: 'render-page'
+      documentId: string
+      pageIndex: number
+    }
+
+export type TypstWorkerRequest = TypstWorkerRequestBody & { id: number }
+
+type TypstWorkerResponse =
+  | ({ id: number; type: 'compile-result' } & TypstCompileResult)
+  | ({ id: number; type: 'page-result' } & TypstPageResult)
   | { id: number; type: 'error'; message: string }
 
 export type TypstWorkerLike = {
-  onmessage: ((event: MessageEvent<RenderResponse>) => void) | null
+  onmessage: ((event: MessageEvent<TypstWorkerResponse>) => void) | null
   onerror: ((event: ErrorEvent) => void) | null
-  postMessage(message: RenderRequest): void
+  postMessage(message: TypstWorkerRequest): void
   terminate(): void
 }
 
-type PendingRender = {
-  resolve(result: TypstRenderResult): void
+type WorkerResult = TypstCompileResult | TypstPageResult
+
+type PendingRequest = {
+  resolve(result: WorkerResult): void
   reject(error: Error): void
 }
 
@@ -43,7 +48,7 @@ export function createTypstWorkerClient(
 ) {
   let nextId = 1
   let disposed = false
-  const pending = new Map<number, PendingRender>()
+  const pending = new Map<number, PendingRequest>()
 
   const rejectPending = (error: Error) => {
     for (const request of pending.values()) {
@@ -52,18 +57,38 @@ export function createTypstWorkerClient(
     pending.clear()
   }
 
+  const request = (message: TypstWorkerRequestBody) => {
+    if (disposed) {
+      return Promise.reject(new Error('Typst preview worker was disposed'))
+    }
+    const id = nextId++
+    return new Promise<WorkerResult>((resolve, reject) => {
+      pending.set(id, { resolve, reject })
+      try {
+        worker.postMessage({ id, ...message } as TypstWorkerRequest)
+      } catch (error) {
+        pending.delete(id)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+  }
+
   worker.onmessage = (event) => {
     const response = event.data
-    const request = pending.get(response.id)
-    if (!request) {
+    const waiting = pending.get(response.id)
+    if (!waiting) {
       return
     }
 
     pending.delete(response.id)
-    if (response.type === 'result') {
-      request.resolve({ svg: response.svg, diagnostics: response.diagnostics })
+    if (response.type === 'error') {
+      waiting.reject(new Error(response.message))
+    } else if (response.type === 'compile-result') {
+      const { documentId, pages, diagnostics } = response
+      waiting.resolve({ documentId, pages, diagnostics })
     } else {
-      request.reject(new Error(response.message))
+      const { documentId, pageIndex, svg } = response
+      waiting.resolve({ documentId, pageIndex, svg })
     }
   }
 
@@ -75,20 +100,23 @@ export function createTypstWorkerClient(
   }
 
   return {
-    render(workspace: TypstWorkspace, options: RenderOptions = {}) {
-      if (disposed) {
-        return Promise.reject(new Error('Typst preview worker was disposed'))
-      }
-      const id = nextId++
-      return new Promise<TypstRenderResult>((resolve, reject) => {
-        pending.set(id, { resolve, reject })
-        try {
-          worker.postMessage({ id, type: 'render', workspace, options })
-        } catch (error) {
-          pending.delete(id)
-          reject(error instanceof Error ? error : new Error(String(error)))
+    compile(workspace: TypstWorkspace): Promise<TypstCompileResult> {
+      return request({ type: 'compile', workspace }).then((result) => {
+        if ('pages' in result) {
+          return result
         }
+        throw new Error('Typst worker returned an unexpected page result')
       })
+    },
+    renderPage(documentId: string, pageIndex: number): Promise<TypstPageResult> {
+      return request({ type: 'render-page', documentId, pageIndex }).then(
+        (result) => {
+          if ('svg' in result) {
+            return result
+          }
+          throw new Error('Typst worker returned an unexpected compile result')
+        },
+      )
     },
     dispose() {
       if (disposed) {
@@ -120,11 +148,17 @@ function getWorkerClient() {
   return workerClient
 }
 
-export function renderTypstWorkspace(
+export function compileTypstWorkspace(
   workspace: TypstWorkspace,
-  options: RenderOptions = {},
-): Promise<TypstRenderResult> {
-  return getWorkerClient().render(workspace, options)
+): Promise<TypstCompileResult> {
+  return getWorkerClient().compile(workspace)
+}
+
+export function renderTypstPage(
+  documentId: string,
+  pageIndex: number,
+): Promise<TypstPageResult> {
+  return getWorkerClient().renderPage(documentId, pageIndex)
 }
 
 export function disposeTypstWorker() {

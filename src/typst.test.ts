@@ -29,67 +29,55 @@ const workspace = {
 }
 
 describe('Typst worker client', () => {
-  it('sends the complete workspace to the render worker', async () => {
+  it('compiles the complete workspace and returns page metadata', async () => {
     const worker = new FakeWorker()
     const client = createTypstWorkerClient(worker)
-    const rendering = client.render(workspace, {})
+    const compiling = client.compile(workspace)
 
-    expect(worker.posted).toEqual([
-      { id: 1, type: 'render', workspace, options: {} },
-    ])
-
+    expect(worker.posted).toEqual([{ id: 1, type: 'compile', workspace }])
     worker.reply({
       id: 1,
-      type: 'result',
-      svg: '<svg />',
+      type: 'compile-result',
+      documentId: 'doc-1',
+      pages: [{ pageOffset: 0, width: 780, height: 1080 }],
       diagnostics: [],
     })
-    await expect(rendering).resolves.toEqual({ svg: '<svg />', diagnostics: [] })
+
+    await expect(compiling).resolves.toMatchObject({ documentId: 'doc-1', pages: [{ height: 1080 }] })
   })
 
-  it('returns structured diagnostics without a JavaScript stack trace', async () => {
+  it('requests a single page from an already compiled document', async () => {
     const worker = new FakeWorker()
     const client = createTypstWorkerClient(worker)
-    const rendering = client.render(workspace, {})
-    const diagnostics = [
-      {
-        severity: 'error',
-        path: '/main.typ',
-        message: 'expected expression',
-        range: {
-          start: { line: 2, column: 9 },
-          end: { line: 2, column: 10 },
-        },
-        trace: [],
-      },
-    ]
+    const rendering = client.renderPage('doc-1', 4)
 
-    worker.reply({ id: 1, type: 'result', svg: '', diagnostics })
+    expect(worker.posted).toEqual([{ id: 1, type: 'render-page', documentId: 'doc-1', pageIndex: 4 }])
+    worker.reply({ id: 1, type: 'page-result', documentId: 'doc-1', pageIndex: 4, svg: '<svg />' })
 
-    await expect(rendering).resolves.toEqual({ svg: '', diagnostics })
+    await expect(rendering).resolves.toEqual({ documentId: 'doc-1', pageIndex: 4, svg: '<svg />' })
   })
 
-  it('routes concurrent responses to the matching request', async () => {
+  it('routes out-of-order responses to matching requests', async () => {
     const worker = new FakeWorker()
     const client = createTypstWorkerClient(worker)
-    const first = client.render({ ...workspace, mainFilePath: '/first.typ' }, {})
-    const second = client.render({ ...workspace, mainFilePath: '/second.typ' }, {})
+    const first = client.renderPage('doc-1', 1)
+    const second = client.renderPage('doc-1', 2)
 
-    worker.reply({ id: 2, type: 'result', svg: '<svg>second</svg>', diagnostics: [] })
-    worker.reply({ id: 1, type: 'result', svg: '<svg>first</svg>', diagnostics: [] })
+    worker.reply({ id: 2, type: 'page-result', documentId: 'doc-1', pageIndex: 2, svg: 'two' })
+    worker.reply({ id: 1, type: 'page-result', documentId: 'doc-1', pageIndex: 1, svg: 'one' })
 
-    await expect(first).resolves.toEqual({ svg: '<svg>first</svg>', diagnostics: [] })
-    await expect(second).resolves.toEqual({ svg: '<svg>second</svg>', diagnostics: [] })
+    await expect(first).resolves.toMatchObject({ pageIndex: 1, svg: 'one' })
+    await expect(second).resolves.toMatchObject({ pageIndex: 2, svg: 'two' })
   })
 
   it('terminates the worker and rejects pending work on dispose', async () => {
     const worker = new FakeWorker()
     const client = createTypstWorkerClient(worker)
-    const rendering = client.render(workspace, {})
+    const compiling = client.compile(workspace)
 
     client.dispose()
 
-    await expect(rendering).rejects.toThrow(/disposed/i)
+    await expect(compiling).rejects.toThrow(/disposed/i)
     expect(worker.terminated).toBe(true)
   })
 })

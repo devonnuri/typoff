@@ -1,6 +1,6 @@
-import type { RenderOptions, TypstRenderResult } from './typst'
 import {
   normalizeDiagnostic,
+  type TypstDiagnostic,
   type TypstWorkspace,
 } from './typstWorkspace'
 
@@ -17,14 +17,17 @@ export type TypstCompileRuntime = {
     root: string
     diagnostics: 'full'
   }): Promise<CompileResult>
-  renderVector(vector: Uint8Array, options: RenderOptions): Promise<string>
+}
+
+export type TypstArtifactResult = {
+  artifact?: Uint8Array
+  diagnostics: TypstDiagnostic[]
 }
 
 export async function compileTypstWorkspace(
   runtime: TypstCompileRuntime,
   workspace: TypstWorkspace,
-  options: RenderOptions,
-): Promise<TypstRenderResult> {
+): Promise<TypstArtifactResult> {
   await runtime.resetShadow()
   for (const file of workspace.files) {
     await runtime.addSource(file.path, file.content)
@@ -37,13 +40,10 @@ export async function compileTypstWorkspace(
   })
   const diagnostics = (result.diagnostics ?? []).map(normalizeDiagnostic)
   if (!result.result || diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
-    return { svg: '', diagnostics }
+    return { diagnostics }
   }
 
-  return {
-    svg: await runtime.renderVector(result.result, options),
-    diagnostics,
-  }
+  return { artifact: result.result, diagnostics }
 }
 
 export function createSerialExecutor() {

@@ -7,13 +7,14 @@ import {
   createRenderVersionGate,
   synchronizeRenderTransition,
 } from './renderVersion'
-import { disposeTypstWorker, renderTypstWorkspace } from './typst'
+import { compileTypstWorkspace, disposeTypstWorker } from './typst'
 import {
   buildTypstWorkspace,
   toTypstVirtualPath,
   type TypstDiagnostic,
 } from './typstWorkspace'
-import { createBrowserSvgPreviewResources } from './previewResource'
+import { VirtualPreview } from './VirtualPreview'
+import type { TypstPageInfo } from './virtualPreview'
 
 const DEFAULT_CONTENT = `// Typoff starter
 #set page(width: 780pt, height: 1080pt, margin: 48pt)
@@ -34,9 +35,6 @@ $sum_(i=1)^n i = n(n+1)/2$
 #align(center)[#text(size: 22pt)[Happy typesetting.]]
 `
 
-const PREVIEW_LIMIT_PAGES = 3
-const PREVIEW_PAGE_WIDTH_PT = 780
-const PREVIEW_PAGE_HEIGHT_PT = 1080
 type PreviewState = 'idle' | 'rendering' | 'error'
 type SaveState = 'saved' | 'saving' | 'dirty'
 
@@ -54,7 +52,10 @@ function App() {
   const [files, setFiles] = useState<StoredFile[]>([])
   const [activeFileId, setActiveFileId] = useState<string | null>(null)
   const [activeContent, setActiveContent] = useState('')
-  const [previewUrl, setPreviewUrl] = useState('')
+  const [previewDocument, setPreviewDocument] = useState<{
+    id: string
+    pages: TypstPageInfo[]
+  } | null>(null)
   const [previewState, setPreviewState] = useState<PreviewState>('idle')
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [diagnostics, setDiagnostics] = useState<TypstDiagnostic[]>([])
@@ -76,7 +77,11 @@ function App() {
   const renderInProgressRef = useRef(false)
   const pendingRenderRef = useRef(false)
   const latestContentRef = useRef('')
-  const previewResourcesRef = useRef(createBrowserSvgPreviewResources())
+  const latestFilesRef = useRef(files)
+  const latestActiveFileIdRef = useRef(activeFileId)
+  latestFilesRef.current = files
+  latestActiveFileIdRef.current = activeFileId
+
 
   const activeFile = useMemo(
     () => files.find((file) => file.id === activeFileId) ?? null,
@@ -131,11 +136,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const previewResources = previewResourcesRef.current
-    return () => {
-      previewResources.clear()
-      disposeTypstWorker()
-    }
+    return () => disposeTypstWorker()
   }, [])
 
   useEffect(() => {
@@ -194,8 +195,7 @@ function App() {
     }
 
     if (!activeContent || !activeFileId) {
-      previewResourcesRef.current.clear()
-      setPreviewUrl('')
+      setPreviewDocument(null)
       setPreviewState('idle')
       setPreviewError(null)
       setDiagnostics([])
@@ -212,41 +212,41 @@ function App() {
         renderInProgressRef.current = true
         pendingRenderRef.current = false
         setPreviewState('rendering')
+        setPreviewDocument(null)
         const renderVersion = renderVersionRef.current.begin()
         const content = latestContentRef.current
+        const currentActiveFileId = latestActiveFileIdRef.current
 
         try {
-          const workspace = buildTypstWorkspace(files, activeFileId, content)
-          const result = await renderTypstWorkspace(workspace, {
-            window: {
-              lo: { x: 0, y: 0 },
-              hi: {
-                x: PREVIEW_PAGE_WIDTH_PT,
-                y: PREVIEW_PAGE_HEIGHT_PT * PREVIEW_LIMIT_PAGES,
-              },
-            },
-          })
+          if (!currentActiveFileId || !content) {
+            setPreviewDocument(null)
+            setPreviewState('idle')
+            return
+          }
+          const workspace = buildTypstWorkspace(
+            latestFilesRef.current,
+            currentActiveFileId,
+            content,
+          )
+          const result = await compileTypstWorkspace(workspace)
           if (!renderVersionRef.current.isCurrent(renderVersion)) {
             return
           }
 
           setDiagnostics(result.diagnostics)
           setPreviewError(null)
-          if (result.svg) {
-            const url = previewResourcesRef.current.replace(result.svg)
-            setPreviewUrl(url)
+          if (result.documentId && result.pages.length > 0) {
+            setPreviewDocument({ id: result.documentId, pages: result.pages })
             setPreviewState('idle')
           } else {
-            previewResourcesRef.current.clear()
-            setPreviewUrl('')
+            setPreviewDocument(null)
             setPreviewState('error')
           }
         } catch (error) {
           if (!renderVersionRef.current.isCurrent(renderVersion)) {
             return
           }
-          previewResourcesRef.current.clear()
-          setPreviewUrl('')
+          setPreviewDocument(null)
           setDiagnostics([])
           setPreviewState('error')
           setPreviewError(
@@ -304,8 +304,7 @@ function App() {
       timer: renderTimerRef,
       clearTimer: window.clearTimeout,
       settlePreview: () => {
-        previewResourcesRef.current.clear()
-        setPreviewUrl('')
+        setPreviewDocument(null)
         setDiagnostics([])
         setPreviewState('idle')
         setPreviewError(null)
@@ -406,8 +405,7 @@ function App() {
           timer: renderTimerRef,
           clearTimer: window.clearTimeout,
           settlePreview: () => {
-            previewResourcesRef.current.clear()
-            setPreviewUrl('')
+            setPreviewDocument(null)
             setDiagnostics([])
             setPreviewState('idle')
             setPreviewError(null)
@@ -435,8 +433,7 @@ function App() {
       timer: renderTimerRef,
       clearTimer: window.clearTimeout,
       settlePreview: () => {
-        previewResourcesRef.current.clear()
-        setPreviewUrl('')
+        setPreviewDocument(null)
         setDiagnostics([])
         setPreviewState('idle')
         setPreviewError(null)
@@ -466,7 +463,9 @@ function App() {
       ? 'Rendering preview'
       : previewState === 'error'
         ? 'Preview error'
-        : `Preview ready (first ${PREVIEW_LIMIT_PAGES} pages)`
+        : previewDocument
+          ? `Preview ready (${previewDocument.pages.length} page${previewDocument.pages.length === 1 ? '' : 's'}, virtualized)`
+          : 'Preview ready'
 
   const clampZoom = (value: number) => Math.min(2, Math.max(0.5, value))
 
@@ -779,17 +778,12 @@ function App() {
                   <span>See the highlighted source and Problems pane.</span>
                 )}
               </div>
-            ) : previewUrl ? (
-              <div
-                className="preview-zoom"
-                style={{ width: `${zoom * 100}%` }}
-              >
-                <img
-                  className="preview-surface"
-                  src={previewUrl}
-                  alt={`Preview of ${activeFile?.name ?? 'Typst document'}`}
-                />
-              </div>
+            ) : previewDocument ? (
+              <VirtualPreview
+                documentId={previewDocument.id}
+                pages={previewDocument.pages}
+                zoom={zoom}
+              />
             ) : (
               <div className="empty-state">
                 <p>Your Typst preview will appear here.</p>

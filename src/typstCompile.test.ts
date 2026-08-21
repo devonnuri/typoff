@@ -23,14 +23,10 @@ describe('compileTypstWorkspace', () => {
         calls.push(['compile', options])
         return { result: new Uint8Array([1, 2, 3]), diagnostics: [] }
       },
-      renderVector: async (vector: Uint8Array) => {
-        calls.push(['render', [...vector]])
-        return '<svg />'
-      },
     }
 
-    await expect(compileTypstWorkspace(runtime, workspace, {})).resolves.toEqual({
-      svg: '<svg />',
+    await expect(compileTypstWorkspace(runtime, workspace)).resolves.toEqual({
+      artifact: new Uint8Array([1, 2, 3]),
       diagnostics: [],
     })
     expect(calls).toEqual([
@@ -38,12 +34,11 @@ describe('compileTypstWorkspace', () => {
       ['source', '/@memory/main.typ', '#import "shared.typ"'],
       ['source', '/@memory/shared.typ', '= Shared'],
       ['compile', { mainFilePath: '/@memory/main.typ', root: '/@memory', diagnostics: 'full' }],
-      ['render', [1, 2, 3]],
+
     ])
   })
 
   it('returns normalized diagnostics and skips rendering on compile errors', async () => {
-    let rendered = false
     const runtime = {
       resetShadow() {},
       addSource() {},
@@ -59,21 +54,17 @@ describe('compileTypstWorkspace', () => {
           ],
         }
       },
-      async renderVector() {
-        rendered = true
-        return '<svg />'
-      },
     }
 
-    const result = await compileTypstWorkspace(runtime, workspace, {})
+    const result = await compileTypstWorkspace(runtime, workspace)
 
-    expect(result.svg).toBe('')
+    expect(result.artifact).toBeUndefined()
     expect(result.diagnostics[0]).toMatchObject({
       severity: 'error',
       path: '/main.typ',
       message: 'expected expression',
     })
-    expect(rendered).toBe(false)
+
   })
 })
 
