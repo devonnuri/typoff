@@ -6,6 +6,7 @@ type VirtualPreviewProps = {
   documentId: string
   pages: TypstPageInfo[]
   zoom: number
+  scrollTarget?: { pageIndex: number; nonce: number } | null
 }
 
 function createSvgUrl(svg: string) {
@@ -14,13 +15,19 @@ function createSvgUrl(svg: string) {
   )
 }
 
-export function VirtualPreview({ documentId, pages, zoom }: VirtualPreviewProps) {
+export function VirtualPreview({
+  documentId,
+  pages,
+  zoom,
+  scrollTarget,
+}: VirtualPreviewProps) {
   const [urls, setUrls] = useState<Map<number, string>>(() => new Map())
   const [errors, setErrors] = useState<Map<number, string>>(() => new Map())
   const elementsRef = useRef(new Map<number, HTMLElement>())
   const inFlightRef = useRef(new Set<number>())
   const documentIdRef = useRef(documentId)
   const mountedRef = useRef(true)
+  const handledScrollNonceRef = useRef<number | null>(null)
   const cacheRef = useRef(
     createPageLruCache(6, (url) => URL.revokeObjectURL(url)),
   )
@@ -115,6 +122,28 @@ export function VirtualPreview({ documentId, pages, zoom }: VirtualPreviewProps)
     }
     return () => observer.disconnect()
   }, [loadPage, pages.length])
+
+  useEffect(() => {
+    if (
+      !scrollTarget ||
+      handledScrollNonceRef.current === scrollTarget.nonce
+    ) {
+      return
+    }
+    const page = elementsRef.current.get(scrollTarget.pageIndex)
+    const scroller = page?.closest<HTMLElement>('.preview-body')
+    if (!page || !scroller) {
+      return
+    }
+    handledScrollNonceRef.current = scrollTarget.nonce
+    void loadPage(scrollTarget.pageIndex)
+    const pageRect = page.getBoundingClientRect()
+    const scrollerRect = scroller.getBoundingClientRect()
+    scroller.scrollTo({
+      top: scroller.scrollTop + pageRect.top - scrollerRect.top,
+      behavior: 'smooth',
+    })
+  }, [loadPage, scrollTarget])
 
   return (
     <div

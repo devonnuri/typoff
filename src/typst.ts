@@ -13,6 +13,10 @@ export type TypstPageResult = {
   svg: string
 }
 
+export type TypstCursorResult = {
+  pageIndex: number
+}
+
 type TypstWorkerRequestBody =
   | { type: 'compile'; workspace: TypstWorkspace }
   | {
@@ -20,12 +24,14 @@ type TypstWorkerRequestBody =
       documentId: string
       pageIndex: number
     }
+  | { type: 'locate-cursor'; workspace: TypstWorkspace; offset: number }
 
 export type TypstWorkerRequest = TypstWorkerRequestBody & { id: number }
 
 type TypstWorkerResponse =
   | ({ id: number; type: 'compile-result' } & TypstCompileResult)
   | ({ id: number; type: 'page-result' } & TypstPageResult)
+  | ({ id: number; type: 'cursor-result' } & TypstCursorResult)
   | { id: number; type: 'error'; message: string }
 
 export type TypstWorkerLike = {
@@ -35,7 +41,7 @@ export type TypstWorkerLike = {
   terminate(): void
 }
 
-type WorkerResult = TypstCompileResult | TypstPageResult
+type WorkerResult = TypstCompileResult | TypstPageResult | TypstCursorResult
 
 type PendingRequest = {
   resolve(result: WorkerResult): void
@@ -86,9 +92,11 @@ export function createTypstWorkerClient(
     } else if (response.type === 'compile-result') {
       const { documentId, pages, diagnostics } = response
       waiting.resolve({ documentId, pages, diagnostics })
-    } else {
+    } else if (response.type === 'page-result') {
       const { documentId, pageIndex, svg } = response
       waiting.resolve({ documentId, pageIndex, svg })
+    } else {
+      waiting.resolve({ pageIndex: response.pageIndex })
     }
   }
 
@@ -117,6 +125,14 @@ export function createTypstWorkerClient(
           throw new Error('Typst worker returned an unexpected compile result')
         },
       )
+    },
+    locateCursor(workspace: TypstWorkspace, offset: number): Promise<TypstCursorResult> {
+      return request({ type: 'locate-cursor', workspace, offset }).then((result) => {
+        if ('pageIndex' in result && !('documentId' in result)) {
+          return result
+        }
+        throw new Error('Typst worker returned an unexpected cursor result')
+      })
     },
     dispose() {
       if (disposed) {
@@ -159,6 +175,13 @@ export function renderTypstPage(
   pageIndex: number,
 ): Promise<TypstPageResult> {
   return getWorkerClient().renderPage(documentId, pageIndex)
+}
+
+export function locateTypstCursor(
+  workspace: TypstWorkspace,
+  offset: number,
+): Promise<TypstCursorResult> {
+  return getWorkerClient().locateCursor(workspace, offset)
 }
 
 export function disposeTypstWorker() {

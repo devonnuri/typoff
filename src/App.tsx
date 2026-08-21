@@ -7,7 +7,11 @@ import {
   createRenderVersionGate,
   synchronizeRenderTransition,
 } from './renderVersion'
-import { compileTypstWorkspace, disposeTypstWorker } from './typst'
+import {
+  compileTypstWorkspace,
+  disposeTypstWorker,
+  locateTypstCursor,
+} from './typst'
 import {
   buildTypstWorkspace,
   toTypstVirtualPath,
@@ -69,6 +73,10 @@ function App() {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [workspaceRevision, setWorkspaceRevision] = useState(0)
+  const [previewScrollTarget, setPreviewScrollTarget] = useState<{
+    pageIndex: number
+    nonce: number
+  } | null>(null)
 
   const suppressSaveRef = useRef(false)
   const renderVersionRef = useRef(createRenderVersionGate())
@@ -79,6 +87,7 @@ function App() {
   const latestContentRef = useRef('')
   const latestFilesRef = useRef(files)
   const latestActiveFileIdRef = useRef(activeFileId)
+  const cursorLookupRef = useRef(0)
   latestFilesRef.current = files
   latestActiveFileIdRef.current = activeFileId
 
@@ -212,7 +221,6 @@ function App() {
         renderInProgressRef.current = true
         pendingRenderRef.current = false
         setPreviewState('rendering')
-        setPreviewDocument(null)
         const renderVersion = renderVersionRef.current.begin()
         const content = latestContentRef.current
         const currentActiveFileId = latestActiveFileIdRef.current
@@ -239,14 +247,12 @@ function App() {
             setPreviewDocument({ id: result.documentId, pages: result.pages })
             setPreviewState('idle')
           } else {
-            setPreviewDocument(null)
             setPreviewState('error')
           }
         } catch (error) {
           if (!renderVersionRef.current.isCurrent(renderVersion)) {
             return
           }
-          setPreviewDocument(null)
           setDiagnostics([])
           setPreviewState('error')
           setPreviewError(
@@ -296,6 +302,8 @@ function App() {
   }, [activeContent, autoPreview])
 
   const openFile = (file: StoredFile) => {
+    cursorLookupRef.current += 1
+    setPreviewScrollTarget(null)
     synchronizeRenderTransition({
       gate: renderVersionRef.current,
       source: file.content,
@@ -397,6 +405,8 @@ function App() {
       if (remaining.length > 0) {
         openFile(sortFiles(remaining)[0])
       } else {
+        cursorLookupRef.current += 1
+        setPreviewScrollTarget(null)
         synchronizeRenderTransition({
           gate: renderVersionRef.current,
           source: '',
@@ -425,6 +435,7 @@ function App() {
         : 'All changes saved'
 
   const handleEditorChange = (value: string) => {
+    cursorLookupRef.current += 1
     synchronizeRenderTransition({
       gate: renderVersionRef.current,
       source: value,
@@ -433,15 +444,47 @@ function App() {
       timer: renderTimerRef,
       clearTimer: window.clearTimeout,
       settlePreview: () => {
-        setPreviewDocument(null)
         setDiagnostics([])
-        setPreviewState('idle')
+        setPreviewState(
+          value && autoPreview && getPreviewPolicy(value.length).auto
+            ? 'rendering'
+            : 'idle',
+        )
         setPreviewError(null)
       },
     })
     setActiveContent(value)
     if (saveState !== 'dirty') {
       setSaveState('dirty')
+    }
+  }
+
+  const handleCursorClick = async (offset: number) => {
+    const currentActiveFileId = latestActiveFileIdRef.current
+    const content = latestContentRef.current
+    if (!currentActiveFileId || !content || !previewDocument) {
+      return
+    }
+    const requestId = ++cursorLookupRef.current
+    const workspace = buildTypstWorkspace(
+      latestFilesRef.current,
+      currentActiveFileId,
+      content,
+    )
+    try {
+      const result = await locateTypstCursor(workspace, offset)
+      if (
+        requestId !== cursorLookupRef.current ||
+        currentActiveFileId !== latestActiveFileIdRef.current ||
+        result.pageIndex < 0 ||
+        result.pageIndex >= previewDocument.pages.length
+      ) {
+        return
+      }
+      setPreviewScrollTarget({ pageIndex: result.pageIndex, nonce: requestId })
+    } catch {
+      // A marker cannot be inserted safely at every Typst code position.
+      // Leave the current preview position unchanged when lookup fails.
     }
   }
 
@@ -663,6 +706,7 @@ function App() {
                   path={activeVirtualPath}
                   diagnostics={diagnostics}
                   onChange={handleEditorChange}
+                  onCursorClick={handleCursorClick}
                 />
                 {diagnostics.length > 0 ? (
                   <section className="error-pane" aria-label="Typst diagnostics">
@@ -769,7 +813,7 @@ function App() {
             </div>
           </div>
           <div className="pane-body preview-body">
-            {previewState === 'error' ? (
+            {previewState === 'error' && !previewDocument ? (
               <div className="preview-error">
                 <p>{previewError ? 'Preview failed' : 'Typst found a problem'}</p>
                 {previewError ? (
@@ -783,6 +827,7 @@ function App() {
                 documentId={previewDocument.id}
                 pages={previewDocument.pages}
                 zoom={zoom}
+                scrollTarget={previewScrollTarget}
               />
             ) : (
               <div className="empty-state">

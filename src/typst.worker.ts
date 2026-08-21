@@ -6,12 +6,14 @@ import rendererWasmUrl from '@myriaddreamin/typst-ts-renderer/pkg/typst_ts_rende
 import {
   compileTypstWorkspace,
   createSerialExecutor,
+  locateTypstCursorPage,
   type TypstCompileRuntime,
+  type TypstQueryRuntime,
 } from './typstCompile'
 import type { TypstWorkerRequest } from './typst'
 import {
   createDocumentRequestGate,
-  cropSvgToPage,
+  isolateSvgPage,
   normalizePageOffsets,
   type TypstPageInfo,
 } from './virtualPreview'
@@ -44,7 +46,7 @@ async function getRuntime() {
     throw new Error('Typst compiler or renderer is unavailable')
   }
 
-  const runtime: TypstCompileRuntime = {
+  const runtime: TypstCompileRuntime & TypstQueryRuntime = {
     async resetShadow() {
       accessModel.reset()
       await compiler.reset()
@@ -54,6 +56,16 @@ async function getRuntime() {
     },
     compile(options) {
       return compiler.compile(options)
+    },
+    query(options) {
+      const { mainFilePath, root, selector, field } = options
+      return compiler.runWithWorld({ mainFilePath, root }, async (world) => {
+        const compiled = await world.compile({ diagnostics: 'full' })
+        if (compiled.hasError) {
+          throw new Error('Typst could not compile the cursor position marker')
+        }
+        return world.query({ selector, field })
+      })
     },
   }
   return { runtime, renderer }
@@ -68,10 +80,6 @@ workerScope.onmessage = (event: MessageEvent<TypstWorkerRequest>) => {
     request.type === 'compile'
       ? requestGate.startCompile()
       : requestGate.capture()
-  if (request.type === 'compile') {
-    currentDocument = undefined
-  }
-
   void executeSerially(async () => {
     try {
       if (!requestGate.isCurrent(requestEpoch)) {
@@ -84,7 +92,6 @@ workerScope.onmessage = (event: MessageEvent<TypstWorkerRequest>) => {
           throw new Error('Typst preview request was superseded')
         }
         if (!result.artifact) {
-          currentDocument = undefined
           workerScope.postMessage({
             id: request.id,
             type: 'compile-result',
@@ -120,6 +127,24 @@ workerScope.onmessage = (event: MessageEvent<TypstWorkerRequest>) => {
         return
       }
 
+      if (request.type === 'locate-cursor') {
+        const pageIndex = await locateTypstCursorPage(
+          runtime,
+          request.workspace,
+          request.offset,
+          `typoff-cursor-${request.id}`,
+        )
+        if (!requestGate.isCurrent(requestEpoch)) {
+          throw new Error('Typst cursor request was superseded')
+        }
+        workerScope.postMessage({
+          id: request.id,
+          type: 'cursor-result',
+          pageIndex,
+        })
+        return
+      }
+
       if (!currentDocument || currentDocument.id !== request.documentId) {
         throw new Error('The requested Typst document is no longer available')
       }
@@ -144,7 +169,7 @@ workerScope.onmessage = (event: MessageEvent<TypstWorkerRequest>) => {
             },
           },
         })
-        return cropSvgToPage(rendered, page)
+        return isolateSvgPage(rendered, request.pageIndex, page)
       })
       if (!requestGate.isCurrent(requestEpoch)) {
         throw new Error('Typst preview request was superseded')

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { compileTypstWorkspace, createSerialExecutor } from './typstCompile'
+import {
+  compileTypstWorkspace,
+  createSerialExecutor,
+  locateTypstCursorPage,
+} from './typstCompile'
 
 const workspace = {
   mainFilePath: '/@memory/main.typ',
@@ -65,6 +69,42 @@ describe('compileTypstWorkspace', () => {
       message: 'expected expression',
     })
 
+  })
+})
+
+describe('cursor page lookup', () => {
+  it('inserts a zero-sized metadata marker at the cursor line and queries its page', async () => {
+    const sources = new Map<string, string>()
+    let queryOptions: unknown
+    const runtime = {
+      resetShadow() {
+        sources.clear()
+      },
+      addSource(path: string, content: string) {
+        sources.set(path, content)
+      },
+      async query(options: unknown) {
+        queryOptions = options
+        return [3]
+      },
+    }
+    const cursorWorkspace = {
+      mainFilePath: '/@memory/main.typ',
+      files: [{ path: '/@memory/main.typ', content: 'First line\nSecond line' }],
+    }
+
+    await expect(
+      locateTypstCursorPage(runtime, cursorWorkspace, 15, 'typoff-cursor-test'),
+    ).resolves.toBe(2)
+    expect(sources.get('/@memory/main.typ')).toBe(
+      'First line\n#context [#metadata(here().page()) <typoff-cursor-test>]\nSecond line',
+    )
+    expect(queryOptions).toEqual({
+      mainFilePath: '/@memory/main.typ',
+      root: '/@memory',
+      selector: '<typoff-cursor-test>',
+      field: 'value',
+    })
   })
 })
 

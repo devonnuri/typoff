@@ -24,6 +24,66 @@ export type TypstArtifactResult = {
   diagnostics: TypstDiagnostic[]
 }
 
+export type TypstQueryRuntime = Pick<
+  TypstCompileRuntime,
+  'resetShadow' | 'addSource'
+> & {
+  query(options: {
+    mainFilePath: string
+    root: string
+    selector: string
+    field: string
+  }): Promise<unknown>
+}
+
+export async function locateTypstCursorPage(
+  runtime: TypstQueryRuntime,
+  workspace: TypstWorkspace,
+  offset: number,
+  label: string,
+): Promise<number> {
+  const mainFile = workspace.files.find(
+    (file) => file.path === workspace.mainFilePath,
+  )
+  if (!mainFile) {
+    throw new Error('The active Typst source is missing from the workspace')
+  }
+
+  const safeOffset = Math.min(Math.max(0, offset), mainFile.content.length)
+  const lineStart = mainFile.content.lastIndexOf('\n', safeOffset - 1) + 1
+  const marker = `#context [#metadata(here().page()) <${label}>]\n`
+  const instrumented = {
+    ...workspace,
+    files: workspace.files.map((file) =>
+      file.path === workspace.mainFilePath
+        ? {
+            ...file,
+            content:
+              file.content.slice(0, lineStart) +
+              marker +
+              file.content.slice(lineStart),
+          }
+        : file,
+    ),
+  }
+
+  await runtime.resetShadow()
+  for (const file of instrumented.files) {
+    await runtime.addSource(file.path, file.content)
+  }
+  const queried = await runtime.query({
+    mainFilePath: instrumented.mainFilePath,
+    root: '/@memory',
+    selector: `<${label}>`,
+    field: 'value',
+  })
+  const page = Array.isArray(queried) ? queried[0] : queried
+  if (typeof page !== 'number' || !Number.isFinite(page) || page < 1) {
+    throw new Error('Typst could not map the cursor to a preview page')
+  }
+  return Math.floor(page) - 1
+}
+
 export async function compileTypstWorkspace(
   runtime: TypstCompileRuntime,
   workspace: TypstWorkspace,

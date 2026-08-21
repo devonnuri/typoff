@@ -57,6 +57,19 @@ describe('Typst worker client', () => {
     await expect(rendering).resolves.toEqual({ documentId: 'doc-1', pageIndex: 4, svg: '<svg />' })
   })
 
+  it('locates an editor cursor in the compiled workspace', async () => {
+    const worker = new FakeWorker()
+    const client = createTypstWorkerClient(worker)
+    const locating = client.locateCursor(workspace, 17)
+
+    expect(worker.posted).toEqual([
+      { id: 1, type: 'locate-cursor', workspace, offset: 17 },
+    ])
+    worker.reply({ id: 1, type: 'cursor-result', pageIndex: 2 })
+
+    await expect(locating).resolves.toEqual({ pageIndex: 2 })
+  })
+
   it('routes out-of-order responses to matching requests', async () => {
     const worker = new FakeWorker()
     const client = createTypstWorkerClient(worker)

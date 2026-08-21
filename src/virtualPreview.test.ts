@@ -3,6 +3,7 @@ import {
   cropSvgToPage,
   createDocumentRequestGate,
   createPageLruCache,
+  isolateSvgPage,
   normalizePageOffsets,
 } from './virtualPreview'
 
@@ -36,6 +37,29 @@ describe('page SVG cropping', () => {
     expect(cropSvgToPage(svg, { pageOffset: 2160, width: 780, height: 1080 })).toBe(
       '<svg viewBox="0 2160 780 1080" width="780" height="1080" data-width="780" data-height="1080"><g /></svg>',
     )
+  })
+
+  it('removes every non-selected page before rebasing the viewport', () => {
+    const svg = [
+      '<svg viewBox="0 0 780 2160" width="780" height="2160">',
+      '<defs><path id="glyph" /></defs>',
+      '<g class="typst-page" transform="translate(0, 0)"><text>PAGE ONE</text></g>',
+      '<g class="typst-page" transform="translate(0, 1080)"><text>PAGE TWO</text></g>',
+      '</svg>',
+    ].join('')
+
+    const isolated = isolateSvgPage(
+      svg,
+      1,
+      { pageOffset: 1080, width: 780, height: 1080 },
+    )
+
+    expect(isolated).toContain('<defs><path id="glyph" /></defs>')
+    expect(isolated).toContain('PAGE TWO')
+    expect(isolated).toContain('transform="translate(0, 0)"')
+    expect(isolated).toContain('viewBox="0 0 780 1080"')
+    expect(isolated).not.toContain('PAGE ONE')
+    expect(isolated.match(/class="typst-page"/g)).toHaveLength(1)
   })
 })
 

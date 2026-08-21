@@ -94,16 +94,28 @@ type TypstEditorProps = {
   path: string
   diagnostics: TypstDiagnostic[]
   onChange: (value: string) => void
+  onCursorClick?: (offset: number) => void
 }
 
-export function TypstEditor({ value, path, diagnostics, onChange }: TypstEditorProps) {
+export function TypstEditor({
+  value,
+  path,
+  diagnostics,
+  onChange,
+  onCursorClick,
+}: TypstEditorProps) {
   const editorHostRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const onChangeRef = useRef(onChange)
+  const onCursorClickRef = useRef(onCursorClick)
 
   useEffect(() => {
     onChangeRef.current = onChange
   }, [onChange])
+
+  useEffect(() => {
+    onCursorClickRef.current = onCursorClick
+  }, [onCursorClick])
 
   useEffect(() => {
     if (!editorHostRef.current) {
@@ -119,6 +131,12 @@ export function TypstEditor({ value, path, diagnostics, onChange }: TypstEditorP
         diagnosticMarkers,
         editorTheme,
         EditorView.lineWrapping,
+        EditorView.domEventHandlers({
+          mouseup: (_event, view) => {
+            onCursorClickRef.current?.(view.state.selection.main.head)
+            return false
+          },
+        }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             onChangeRef.current(update.state.doc.toString())
