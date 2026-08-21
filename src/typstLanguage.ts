@@ -51,7 +51,11 @@ export const typstLanguage = StreamLanguage.define({
       return 'keyword'
     }
 
-    if (stream.match(/(\*{1,2}|_{1,2}|==|!=|<=|>=|->|<-)/)) {
+    if (stream.match(/\*{1,2}/)) {
+      return 'strong'
+    }
+
+    if (stream.match(/(_{1,2}|==|!=|<=|>=|->|<-)/)) {
       return 'operator'
     }
 

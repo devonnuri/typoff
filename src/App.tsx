@@ -7,7 +7,13 @@ import {
   createRenderVersionGate,
   synchronizeRenderTransition,
 } from './renderVersion'
-import { renderTypstSvg } from './typst'
+import { disposeTypstWorker, renderTypstWorkspace } from './typst'
+import {
+  buildTypstWorkspace,
+  toTypstVirtualPath,
+  type TypstDiagnostic,
+} from './typstWorkspace'
+import { createBrowserSvgPreviewResources } from './previewResource'
 
 const DEFAULT_CONTENT = `// Typoff starter
 #set page(width: 780pt, height: 1080pt, margin: 48pt)
@@ -48,9 +54,10 @@ function App() {
   const [files, setFiles] = useState<StoredFile[]>([])
   const [activeFileId, setActiveFileId] = useState<string | null>(null)
   const [activeContent, setActiveContent] = useState('')
-  const [previewSvg, setPreviewSvg] = useState('')
+  const [previewUrl, setPreviewUrl] = useState('')
   const [previewState, setPreviewState] = useState<PreviewState>('idle')
   const [previewError, setPreviewError] = useState<string | null>(null)
+  const [diagnostics, setDiagnostics] = useState<TypstDiagnostic[]>([])
   const [saveState, setSaveState] = useState<SaveState>('saved')
   const [autoPreview, setAutoPreview] = useState(true)
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
@@ -60,6 +67,7 @@ function App() {
   const [zoom, setZoom] = useState(1)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  const [workspaceRevision, setWorkspaceRevision] = useState(0)
 
   const suppressSaveRef = useRef(false)
   const renderVersionRef = useRef(createRenderVersionGate())
@@ -68,11 +76,22 @@ function App() {
   const renderInProgressRef = useRef(false)
   const pendingRenderRef = useRef(false)
   const latestContentRef = useRef('')
+  const previewResourcesRef = useRef(createBrowserSvgPreviewResources())
 
   const activeFile = useMemo(
     () => files.find((file) => file.id === activeFileId) ?? null,
     [files, activeFileId],
   )
+  const activeVirtualPath = useMemo(() => {
+    if (!activeFile) {
+      return ''
+    }
+    try {
+      return toTypstVirtualPath(activeFile.name)
+    } catch {
+      return ''
+    }
+  }, [activeFile])
 
   useEffect(() => {
     let isMounted = true
@@ -108,6 +127,14 @@ function App() {
 
     return () => {
       isMounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    const previewResources = previewResourcesRef.current
+    return () => {
+      previewResources.clear()
+      disposeTypstWorker()
     }
   }, [])
 
@@ -163,12 +190,15 @@ function App() {
 
     if (renderTimerRef.current) {
       window.clearTimeout(renderTimerRef.current)
+      renderTimerRef.current = null
     }
 
-    if (!activeContent) {
-      setPreviewSvg('')
+    if (!activeContent || !activeFileId) {
+      previewResourcesRef.current.clear()
+      setPreviewUrl('')
       setPreviewState('idle')
       setPreviewError(null)
+      setDiagnostics([])
       return
     }
 
@@ -186,7 +216,8 @@ function App() {
         const content = latestContentRef.current
 
         try {
-          const svg = await renderTypstSvg(content, {
+          const workspace = buildTypstWorkspace(files, activeFileId, content)
+          const result = await renderTypstWorkspace(workspace, {
             window: {
               lo: { x: 0, y: 0 },
               hi: {
@@ -198,27 +229,31 @@ function App() {
           if (!renderVersionRef.current.isCurrent(renderVersion)) {
             return
           }
-          setPreviewSvg(svg)
-          setPreviewState('idle')
+
+          setDiagnostics(result.diagnostics)
           setPreviewError(null)
+          if (result.svg) {
+            const url = previewResourcesRef.current.replace(result.svg)
+            setPreviewUrl(url)
+            setPreviewState('idle')
+          } else {
+            previewResourcesRef.current.clear()
+            setPreviewUrl('')
+            setPreviewState('error')
+          }
         } catch (error) {
           if (!renderVersionRef.current.isCurrent(renderVersion)) {
             return
           }
+          previewResourcesRef.current.clear()
+          setPreviewUrl('')
+          setDiagnostics([])
           setPreviewState('error')
-          setPreviewSvg('')
-          if (error instanceof Error) {
-            const details = [error.message, error.stack]
-              .filter(Boolean)
-              .join('\n')
-            setPreviewError(details || 'Typst render failed')
-          } else {
-            try {
-              setPreviewError(JSON.stringify(error, null, 2))
-            } catch {
-              setPreviewError(String(error))
-            }
-          }
+          setPreviewError(
+            error instanceof Error && error.message
+              ? error.message
+              : 'Typst preview failed unexpectedly',
+          )
         } finally {
           renderInProgressRef.current = false
           if (pendingRenderRef.current) {
@@ -252,7 +287,7 @@ function App() {
         window.clearTimeout(renderTimerRef.current)
       }
     }
-  }, [activeContent, activeFileId, autoPreview])
+  }, [activeContent, activeFileId, autoPreview, workspaceRevision])
 
   useEffect(() => {
     if (autoPreview && !getPreviewPolicy(activeContent.length).auto) {
@@ -269,8 +304,10 @@ function App() {
       timer: renderTimerRef,
       clearTimer: window.clearTimeout,
       settlePreview: () => {
+        previewResourcesRef.current.clear()
+        setPreviewUrl('')
+        setDiagnostics([])
         setPreviewState('idle')
-        setPreviewSvg('')
         setPreviewError(null)
       },
     })
@@ -323,11 +360,26 @@ function App() {
       return
     }
 
+    try {
+      const nextPath = toTypstVirtualPath(trimmed)
+      const duplicate = files.some(
+        (file) => file.id !== target.id && toTypstVirtualPath(file.name) === nextPath,
+      )
+      if (duplicate) {
+        throw new Error(`Another file already uses ${trimmed}`)
+      }
+    } catch (error) {
+      setPreviewState('error')
+      setPreviewError(error instanceof Error ? error.message : 'Invalid Typst file path')
+      return
+    }
+
     const updated = { ...target, name: trimmed, updatedAt: Date.now() }
     await saveFile(updated)
     setFiles((prev) =>
       sortFiles(prev.map((file) => (file.id === updated.id ? updated : file))),
     )
+    setWorkspaceRevision((revision) => revision + 1)
     setRenamingId(null)
     setRenameDraft('')
   }
@@ -339,6 +391,7 @@ function App() {
 
     await deleteFile(file.id)
     setFiles((prev) => prev.filter((item) => item.id !== file.id))
+    setWorkspaceRevision((revision) => revision + 1)
 
     if (file.id === activeFileId) {
       const remaining = files.filter((item) => item.id !== file.id)
@@ -353,8 +406,10 @@ function App() {
           timer: renderTimerRef,
           clearTimer: window.clearTimeout,
           settlePreview: () => {
+            previewResourcesRef.current.clear()
+            setPreviewUrl('')
+            setDiagnostics([])
             setPreviewState('idle')
-            setPreviewSvg('')
             setPreviewError(null)
           },
         })
@@ -380,14 +435,29 @@ function App() {
       timer: renderTimerRef,
       clearTimer: window.clearTimeout,
       settlePreview: () => {
+        previewResourcesRef.current.clear()
+        setPreviewUrl('')
+        setDiagnostics([])
         setPreviewState('idle')
-        setPreviewSvg('')
         setPreviewError(null)
       },
     })
     setActiveContent(value)
     if (saveState !== 'dirty') {
       setSaveState('dirty')
+    }
+  }
+
+  const openDiagnosticFile = (diagnostic: TypstDiagnostic) => {
+    const file = files.find((candidate) => {
+      try {
+        return toTypstVirtualPath(candidate.name) === diagnostic.path
+      } catch {
+        return false
+      }
+    })
+    if (file && file.id !== activeFileId) {
+      openFile(file)
     }
   }
 
@@ -588,10 +658,42 @@ function App() {
           </div>
           <div className="pane-body">
             {activeFile ? (
-              <TypstEditor
-                value={activeContent}
-                onChange={handleEditorChange}
-              />
+              <div className="editor-stack">
+                <TypstEditor
+                  value={activeContent}
+                  path={activeVirtualPath}
+                  diagnostics={diagnostics}
+                  onChange={handleEditorChange}
+                />
+                {diagnostics.length > 0 ? (
+                  <section className="error-pane" aria-label="Typst diagnostics">
+                    <div className="error-pane-header">
+                      <strong>Problems</strong>
+                      <span>{diagnostics.length}</span>
+                    </div>
+                    <div className="error-list">
+                      {diagnostics.map((diagnostic, index) => {
+                        const location = diagnostic.range
+                          ? `${diagnostic.range.start.line + 1}:${diagnostic.range.start.column + 1}`
+                          : ''
+                        const path = diagnostic.path.replace(/^\/@memory\//, '') || activeFile.name
+                        return (
+                          <button
+                            className={`error-item ${diagnostic.severity}`}
+                            key={`${diagnostic.path}-${diagnostic.rawRange}-${index}`}
+                            type="button"
+                            onClick={() => openDiagnosticFile(diagnostic)}
+                          >
+                            <span className="error-severity">{diagnostic.severity}</span>
+                            <span className="error-message">{diagnostic.message}</span>
+                            <code>{path}{location ? `:${location}` : ''}</code>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </section>
+                ) : null}
+              </div>
             ) : (
               <div className="empty-state">
                 <p>Select or create a file to start writing.</p>
@@ -670,20 +772,22 @@ function App() {
           <div className="pane-body preview-body">
             {previewState === 'error' ? (
               <div className="preview-error">
-                <p>Typst compile error</p>
-                <pre>{previewError}</pre>
+                <p>{previewError ? 'Preview failed' : 'Typst found a problem'}</p>
+                {previewError ? (
+                  <pre>{previewError}</pre>
+                ) : (
+                  <span>See the highlighted source and Problems pane.</span>
+                )}
               </div>
-            ) : previewSvg ? (
+            ) : previewUrl ? (
               <div
                 className="preview-zoom"
-                style={{
-                  transform: `scale(${zoom})`,
-                  transformOrigin: 'top left',
-                }}
+                style={{ width: `${zoom * 100}%` }}
               >
-                <div
+                <img
                   className="preview-surface"
-                  dangerouslySetInnerHTML={{ __html: previewSvg }}
+                  src={previewUrl}
+                  alt={`Preview of ${activeFile?.name ?? 'Typst document'}`}
                 />
               </div>
             ) : (
