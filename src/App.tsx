@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { TypstEditor } from './TypstEditor'
 import { deleteFile, listFiles, saveFile, type StoredFile } from './storage'
+import { getPreviewPolicy } from './previewPolicy'
 import { renderTypstSvg } from './typst'
 
 const DEFAULT_CONTENT = `// Typoff starter
 #set page(width: 780pt, height: 1080pt, margin: 48pt)
-#set text(font: "IBM Plex Sans", size: 14pt)
+#set text(font: "Libertinus Serif", size: 14pt)
 
 = Typoff
 An offline Typst editor built on Vite.
@@ -26,8 +27,6 @@ $sum_(i=1)^n i = n(n+1)/2$
 const PREVIEW_LIMIT_PAGES = 3
 const PREVIEW_PAGE_WIDTH_PT = 780
 const PREVIEW_PAGE_HEIGHT_PT = 1080
-const AUTO_PREVIEW_LIMIT = 20000
-
 type PreviewState = 'idle' | 'rendering' | 'error'
 type SaveState = 'saved' | 'saving' | 'dirty'
 
@@ -225,14 +224,7 @@ function App() {
         }
       }
 
-      const isLarge = activeContent.length > 15000
-      if (typeof window.requestIdleCallback === 'function' && isLarge) {
-        window.requestIdleCallback(() => {
-          void run()
-        })
-      } else {
-        void run()
-      }
+      void run()
     }
 
     if (immediate) {
@@ -240,12 +232,12 @@ function App() {
       return
     }
 
-    const delay = activeContent.length > 15000 ? 1200 : 400
-    renderTimerRef.current = window.setTimeout(scheduleRender, delay)
+    const { delayMs } = getPreviewPolicy(activeContent.length)
+    renderTimerRef.current = window.setTimeout(scheduleRender, delayMs)
   }
 
   useEffect(() => {
-    if (!autoPreview) {
+    if (!autoPreview || !getPreviewPolicy(activeContent.length).auto) {
       return
     }
 
@@ -259,7 +251,7 @@ function App() {
   }, [activeContent, autoPreview])
 
   useEffect(() => {
-    if (autoPreview && activeContent.length > AUTO_PREVIEW_LIMIT) {
+    if (autoPreview && !getPreviewPolicy(activeContent.length).auto) {
       setAutoPreview(false)
     }
   }, [activeContent, autoPreview])
