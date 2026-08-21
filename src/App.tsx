@@ -3,6 +3,10 @@ import './App.css'
 import { TypstEditor } from './TypstEditor'
 import { deleteFile, listFiles, saveFile, type StoredFile } from './storage'
 import { getPreviewPolicy } from './previewPolicy'
+import {
+  createRenderVersionGate,
+  synchronizeRenderTransition,
+} from './renderVersion'
 import { renderTypstSvg } from './typst'
 
 const DEFAULT_CONTENT = `// Typoff starter
@@ -58,7 +62,7 @@ function App() {
   const [renameDraft, setRenameDraft] = useState('')
 
   const suppressSaveRef = useRef(false)
-  const renderTokenRef = useRef(0)
+  const renderVersionRef = useRef(createRenderVersionGate())
   const workspaceRef = useRef<HTMLDivElement | null>(null)
   const renderTimerRef = useRef<number | null>(null)
   const renderInProgressRef = useRef(false)
@@ -178,7 +182,7 @@ function App() {
         renderInProgressRef.current = true
         pendingRenderRef.current = false
         setPreviewState('rendering')
-        const token = ++renderTokenRef.current
+        const renderVersion = renderVersionRef.current.begin()
         const content = latestContentRef.current
 
         try {
@@ -191,14 +195,14 @@ function App() {
               },
             },
           })
-          if (token !== renderTokenRef.current) {
+          if (!renderVersionRef.current.isCurrent(renderVersion)) {
             return
           }
           setPreviewSvg(svg)
           setPreviewState('idle')
           setPreviewError(null)
         } catch (error) {
-          if (token !== renderTokenRef.current) {
+          if (!renderVersionRef.current.isCurrent(renderVersion)) {
             return
           }
           setPreviewState('error')
@@ -248,7 +252,7 @@ function App() {
         window.clearTimeout(renderTimerRef.current)
       }
     }
-  }, [activeContent, autoPreview])
+  }, [activeContent, activeFileId, autoPreview])
 
   useEffect(() => {
     if (autoPreview && !getPreviewPolicy(activeContent.length).auto) {
@@ -257,6 +261,19 @@ function App() {
   }, [activeContent, autoPreview])
 
   const openFile = (file: StoredFile) => {
+    synchronizeRenderTransition({
+      gate: renderVersionRef.current,
+      source: file.content,
+      latestSource: latestContentRef,
+      pending: pendingRenderRef,
+      timer: renderTimerRef,
+      clearTimer: window.clearTimeout,
+      settlePreview: () => {
+        setPreviewState('idle')
+        setPreviewSvg('')
+        setPreviewError(null)
+      },
+    })
     suppressSaveRef.current = true
     setActiveFileId(file.id)
     setActiveContent(file.content)
@@ -328,6 +345,19 @@ function App() {
       if (remaining.length > 0) {
         openFile(sortFiles(remaining)[0])
       } else {
+        synchronizeRenderTransition({
+          gate: renderVersionRef.current,
+          source: '',
+          latestSource: latestContentRef,
+          pending: pendingRenderRef,
+          timer: renderTimerRef,
+          clearTimer: window.clearTimeout,
+          settlePreview: () => {
+            setPreviewState('idle')
+            setPreviewSvg('')
+            setPreviewError(null)
+          },
+        })
         setActiveFileId(null)
         setActiveContent('')
       }
@@ -342,6 +372,19 @@ function App() {
         : 'All changes saved'
 
   const handleEditorChange = (value: string) => {
+    synchronizeRenderTransition({
+      gate: renderVersionRef.current,
+      source: value,
+      latestSource: latestContentRef,
+      pending: pendingRenderRef,
+      timer: renderTimerRef,
+      clearTimer: window.clearTimeout,
+      settlePreview: () => {
+        setPreviewState('idle')
+        setPreviewSvg('')
+        setPreviewError(null)
+      },
+    })
     setActiveContent(value)
     if (saveState !== 'dirty') {
       setSaveState('dirty')
