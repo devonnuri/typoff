@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import { buildSavePayload } from './autoSave'
 import { TypstEditor } from './TypstEditor'
 import { deleteFile, listFiles, saveFile, type StoredFile } from './storage'
 import { getPreviewPolicy } from './previewPolicy'
@@ -89,6 +90,7 @@ function App() {
   const latestContentRef = useRef('')
   const latestFilesRef = useRef(files)
   const latestActiveFileIdRef = useRef(activeFileId)
+  const latestActiveFileNameRef = useRef<string | undefined>(undefined)
   const cursorLookupRef = useRef(0)
   latestFilesRef.current = files
   latestActiveFileIdRef.current = activeFileId
@@ -98,6 +100,7 @@ function App() {
     () => files.find((file) => file.id === activeFileId) ?? null,
     [files, activeFileId],
   )
+  latestActiveFileNameRef.current = activeFile?.name
   const activeVirtualPath = useMemo(() => {
     if (!activeFile) {
       return ''
@@ -182,11 +185,13 @@ function App() {
     }
 
     const handle = window.setTimeout(async () => {
-      const next = {
-        id: activeFileId,
-        name: activeFile?.name ?? 'Untitled.typ',
-        content: activeContent,
-        updatedAt: Date.now(),
+      const next = buildSavePayload({
+        activeFileId: latestActiveFileIdRef.current,
+        latestName: latestActiveFileNameRef.current,
+        latestContentRef,
+      })
+      if (!next) {
+        return
       }
       setSaveState('saving')
       await saveFile(next)
