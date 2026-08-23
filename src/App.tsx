@@ -12,6 +12,7 @@ import {
   synchronizeRenderTransition,
 } from './renderVersion'
 import { CursorLookupThrottle } from './cursorLookup'
+import { openTypstFile, saveTypstFile } from './fileIo'
 import {
   compileTypstWorkspace,
   disposeTypstWorker,
@@ -387,6 +388,49 @@ function App() {
     openFile(next)
   }
 
+  const handleImportFile = async () => {
+    const opened = await openTypstFile()
+    if (!opened) {
+      return
+    }
+
+    const existingNames = new Set(latestFilesRef.current.map((file) => file.name))
+    let name = opened.name
+    let index = 1
+    while (existingNames.has(name)) {
+      const dotIndex = opened.name.lastIndexOf('.')
+      const stem = dotIndex > 0 ? opened.name.slice(0, dotIndex) : opened.name
+      const ext = dotIndex > 0 ? opened.name.slice(dotIndex) : ''
+      name = `${stem} ${index}${ext}`
+      index += 1
+    }
+
+    try {
+      toTypstVirtualPath(name)
+    } catch {
+      // The picked file does not map to a valid Typst virtual path; skip it.
+      return
+    }
+
+    const next: StoredFile = {
+      id: createId(),
+      name,
+      content: opened.content,
+      updatedAt: Date.now(),
+    }
+
+    await saveFile(next)
+    setFiles((prev) => sortFiles([...prev, next]))
+    openFile(next)
+  }
+
+  const handleExportFile = async () => {
+    if (!activeFile) {
+      return
+    }
+    await saveTypstFile(activeFile.name, activeContent)
+  }
+
   const handleRename = async () => {
     if (!renamingId) {
       return
@@ -668,6 +712,21 @@ function App() {
                     strokeLinecap="square"
                   />
                 </svg>
+              </button>
+              <button
+                className="ghost"
+                onClick={handleImportFile}
+                type="button"
+              >
+                Import
+              </button>
+              <button
+                className="ghost"
+                onClick={handleExportFile}
+                type="button"
+                disabled={!activeFile}
+              >
+                Export
               </button>
               <button
                 className="ghost"
