@@ -9,6 +9,7 @@ import { basicSetup } from 'codemirror'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
 import { TYPOFF_DARK_PALETTE } from './editorTheme'
+import { createEditorKeymapExtensions } from './editorKeys'
 import { typstLanguage } from './typstLanguage'
 import {
   positionFromDiagnostic,
@@ -126,6 +127,7 @@ export function TypstEditor({
       doc: value,
       extensions: [
         basicSetup,
+        createEditorKeymapExtensions(),
         typstLanguage,
         syntaxHighlighting(highlightStyle),
         diagnosticMarkers,
