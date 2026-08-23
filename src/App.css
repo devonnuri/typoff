@@ -58,6 +58,32 @@
   cursor: not-allowed;
 }
 
+.snackbar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: #1c1c1c;
+  color: #ffffff;
+  border: 1px solid #ffffff;
+  padding: 0.6rem 1rem;
+  font-size: 0.85rem;
+  z-index: 1000;
+}
+
+.snackbar button {
+  background: transparent;
+  color: #ffffff;
+  border: 1px solid #ffffff;
+  border-radius: 0;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
 .workspace {
   flex: 1;
   display: grid;

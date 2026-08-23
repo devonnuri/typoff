@@ -12,6 +12,7 @@ import {
   synchronizeRenderTransition,
 } from './renderVersion'
 import { CursorLookupThrottle } from './cursorLookup'
+import { createDeleteIntent, UNDO_WINDOW_MS } from './deleteUndo'
 import { openTypstFile, saveTypstFile } from './fileIo'
 import {
   compileTypstWorkspace,
@@ -80,6 +81,9 @@ function App() {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [workspaceRevision, setWorkspaceRevision] = useState(0)
+  const [undoIntent, setUndoIntent] = useState<
+    ReturnType<typeof createDeleteIntent> | null
+  >(null)
   const [previewScrollTarget, setPreviewScrollTarget] = useState<{
     pageIndex: number
     nonce: number
@@ -161,6 +165,18 @@ function App() {
   useEffect(() => {
     return () => disposeTypstWorker()
   }, [])
+
+  useEffect(() => {
+    if (!undoIntent) {
+      return
+    }
+
+    const handle = window.setTimeout(() => {
+      setUndoIntent(null)
+    }, UNDO_WINDOW_MS)
+
+    return () => window.clearTimeout(handle)
+  }, [undoIntent])
 
   useEffect(() => {
     const workspace = workspaceRef.current
@@ -475,9 +491,10 @@ function App() {
   }
 
   const handleDelete = async (file: StoredFile) => {
-    if (!window.confirm(`Delete ${file.name}?`)) {
-      return
-    }
+    // Capture the intent BEFORE deleting so Undo can restore this exact file.
+    // Replacing a pending intent permanently deletes the previously deleted
+    // file — only the most recent delete is undoable.
+    setUndoIntent(createDeleteIntent(file))
 
     await deleteFile(file.id)
     setFiles((prev) => prev.filter((item) => item.id !== file.id))
@@ -507,6 +524,23 @@ function App() {
         setActiveFileId(null)
         setActiveContent('')
       }
+    }
+  }
+
+  const handleUndoDelete = async () => {
+    if (!undoIntent) {
+      return
+    }
+
+    const { file } = undoIntent
+    setUndoIntent(null)
+    // saveFile upserts (idb put), so re-inserting restores the file.
+    await saveFile(file)
+    setFiles((prev) =>
+      sortFiles([...prev.filter((item) => item.id !== file.id), file]),
+    )
+    if (!latestActiveFileIdRef.current) {
+      openFile(file)
     }
   }
 
@@ -962,6 +996,14 @@ function App() {
           </div>
         </section>
       </div>
+      {undoIntent ? (
+        <div className="snackbar" role="status">
+          <span>Deleted {undoIntent.file.name}</span>
+          <button className="ghost" type="button" onClick={handleUndoDelete}>
+            Undo
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }
