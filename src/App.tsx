@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { buildSavePayload } from './autoSave'
+import { mapShortcutToAction, type AppShortcutAction } from './appShortcuts'
 import { exportCurrentDocument } from './exportDocument'
 import { TypstEditor } from './TypstEditor'
 import { deleteFile, listFiles, saveFile, type StoredFile } from './storage'
@@ -100,6 +101,7 @@ function App() {
   const renderRetryCountRef = useRef(0)
   const latestContentRef = useRef('')
   const latestFilesRef = useRef(files)
+  const appShortcutRef = useRef<(action: AppShortcutAction) => void>(() => {})
   const latestActiveFileIdRef = useRef(activeFileId)
   const latestActiveFileNameRef = useRef<string | undefined>(undefined)
   const cursorLookupRef = useRef(0)
@@ -675,6 +677,46 @@ function App() {
   const handleZoomReset = () => setZoom(1)
 
   const handleRenderOnce = () => queueRender(true)
+
+  // Global shortcuts: one window keydown listener for the app's lifetime.
+  // The dispatcher is read through a ref so the listener never re-binds even
+  // though the handlers it calls are recreated on each render.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const action = mapShortcutToAction(event)
+      if (!action) {
+        return
+      }
+      event.preventDefault()
+      appShortcutRef.current(action)
+    }
+
+    window.addEventListener('keydown', onKeyDown, false)
+    return () => window.removeEventListener('keydown', onKeyDown, false)
+  }, [])
+
+  appShortcutRef.current = (action: AppShortcutAction) => {
+    switch (action) {
+      case 'render':
+        handleRenderOnce()
+        break
+      case 'new-file':
+        void createFile()
+        break
+      case 'toggle-sidebar':
+        setIsSidebarOpen((prev) => !prev)
+        break
+      case 'zoom-in':
+        handleZoomIn()
+        break
+      case 'zoom-out':
+        handleZoomOut()
+        break
+      case 'reset-zoom':
+        handleZoomReset()
+        break
+    }
+  }
 
   const startResize = (mode: 'sidebar' | 'editor', startX: number) => {
     const workspace = workspaceRef.current
