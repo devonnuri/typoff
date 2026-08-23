@@ -3,7 +3,10 @@ import './App.css'
 import { buildSavePayload } from './autoSave'
 import { TypstEditor } from './TypstEditor'
 import { deleteFile, listFiles, saveFile, type StoredFile } from './storage'
-import { getPreviewPolicy } from './previewPolicy'
+import {
+  getPreviewPolicy,
+  recordCompileDuration,
+} from './previewPolicy'
 import {
   createRenderVersionGate,
   synchronizeRenderTransition,
@@ -251,10 +254,13 @@ function App() {
             currentActiveFileId,
             content,
           )
+          const compileStartedAt = performance.now()
           const result = await compileTypstWorkspace(workspace)
           if (!renderVersionRef.current.isCurrent(renderVersion)) {
             return
           }
+
+          recordCompileDuration(performance.now() - compileStartedAt)
 
           renderRetryCountRef.current = 0
           setDiagnostics(result.diagnostics)
