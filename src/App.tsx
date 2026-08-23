@@ -11,6 +11,7 @@ import {
   compileTypstWorkspace,
   disposeTypstWorker,
   locateTypstCursor,
+  retryAfterFatalError,
 } from './typst'
 import {
   buildTypstWorkspace,
@@ -84,6 +85,7 @@ function App() {
   const renderTimerRef = useRef<number | null>(null)
   const renderInProgressRef = useRef(false)
   const pendingRenderRef = useRef(false)
+  const renderRetryCountRef = useRef(0)
   const latestContentRef = useRef('')
   const latestFilesRef = useRef(files)
   const latestActiveFileIdRef = useRef(activeFileId)

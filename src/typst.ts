@@ -148,15 +148,44 @@ export function createTypstWorkerClient(
 }
 
 let workerClient: ReturnType<typeof createTypstWorkerClient> | undefined
+let consecutiveFatalErrors = 0
+
+const defaultWorkerFactory = (): TypstWorkerLike =>
+  new Worker(new URL('./typst.worker.ts', import.meta.url), {
+    type: 'module',
+  }) as TypstWorkerLike
+
+let workerFactory: () => TypstWorkerLike = defaultWorkerFactory
+
+export function setTypstWorkerFactory(factory: () => TypstWorkerLike) {
+  workerFactory = factory
+}
+
+export function getConsecutiveFatalErrorCount() {
+  return consecutiveFatalErrors
+}
+
+/**
+ * No-op-safe recovery helper: clears the fatal-error streak and drops the
+ * current (dead) worker client so the next call spins up a fresh worker.
+ * Returns true when there was a fatal error to recover from.
+ */
+export function retryAfterFatalError(): boolean {
+  if (consecutiveFatalErrors === 0 && !workerClient) {
+    return false
+  }
+  consecutiveFatalErrors = 0
+  workerClient = undefined
+  return true
+}
 
 function getWorkerClient() {
   if (!workerClient) {
-    const worker = new Worker(new URL('./typst.worker.ts', import.meta.url), {
-      type: 'module',
-    }) as TypstWorkerLike
+    const worker = workerFactory()
     const client = createTypstWorkerClient(worker, () => {
       if (workerClient === client) {
         workerClient = undefined
+        consecutiveFatalErrors += 1
       }
     })
     workerClient = client
@@ -187,6 +216,12 @@ export function locateTypstCursor(
 export function disposeTypstWorker() {
   workerClient?.dispose()
   workerClient = undefined
+}
+
+export function resetTypstWorkerForTest() {
+  disposeTypstWorker()
+  consecutiveFatalErrors = 0
+  workerFactory = defaultWorkerFactory
 }
 
 if (import.meta.hot) {

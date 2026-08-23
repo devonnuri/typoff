@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { createTypstWorkerClient, type TypstWorkerLike } from './typst'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  compileTypstWorkspace,
+  createTypstWorkerClient,
+  resetTypstWorkerForTest,
+  setTypstWorkerFactory,
+  type TypstWorkerLike,
+} from './typst'
 
 class FakeWorker implements TypstWorkerLike {
   onmessage: ((event: MessageEvent) => void) | null = null
@@ -92,5 +98,39 @@ describe('Typst worker client', () => {
 
     await expect(compiling).rejects.toThrow(/disposed/i)
     expect(worker.terminated).toBe(true)
+  })
+
+  it('recovers from a fatal worker error by compiling on a fresh worker', async () => {
+    const workers: FakeWorker[] = []
+    const factory = vi.fn(() => {
+      const worker = new FakeWorker()
+      workers.push(worker)
+      return worker
+    })
+    setTypstWorkerFactory(factory)
+    try {
+      const first = compileTypstWorkspace(workspace)
+
+      workers[0].onerror?.({ message: 'worker crashed' } as ErrorEvent)
+
+      await expect(first).rejects.toThrow(/crashed/i)
+      expect(workers[0].terminated).toBe(true)
+
+      const second = compileTypstWorkspace(workspace)
+      expect(factory).toHaveBeenCalledTimes(2)
+
+      workers[1].reply({
+        id: 1,
+        type: 'compile-result',
+        documentId: 'doc-2',
+        pages: [],
+        diagnostics: [],
+      })
+
+      await expect(second).resolves.toMatchObject({ documentId: 'doc-2' })
+      expect(workers[0].posted.length + workers[1].posted.length).toBe(2)
+    } finally {
+      resetTypstWorkerForTest()
+    }
   })
 })
