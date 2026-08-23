@@ -120,6 +120,18 @@ export function isolateSvgPage(
   })
 }
 
+/**
+ * Converts a click's viewport Y coordinate into document points relative to
+ * the top of the rendered page element.
+ */
+export function computeClickedYPt(
+  clientY: number,
+  rectTop: number,
+  zoom: number,
+): number {
+  return (clientY - rectTop) / zoom
+}
+
 export type PageLruCapacity = number | { maxBytes: number }
 
 /**

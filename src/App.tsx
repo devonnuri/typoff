@@ -46,8 +46,10 @@ function App() {
     autoPreview,
     setAutoPreview,
     previewScrollTarget,
+    cursorTarget,
     queueRender,
     handleCursorClick,
+    handleSourceJump,
     handleExportSvg,
   } = pipeline
 
@@ -311,6 +313,7 @@ function App() {
                   diagnostics={diagnostics}
                   onChange={handleEditorChange}
                   onCursorClick={handleCursorClick}
+                  cursorTarget={cursorTarget}
                 />
                 {diagnostics.length > 0 ? (
                   <section className="error-pane" aria-label="Typst diagnostics">
@@ -380,6 +383,7 @@ function App() {
           previewError={previewError}
           previewDocument={previewDocument}
           previewScrollTarget={previewScrollTarget}
+          onPageClick={(pageIndex, yPt) => void handleSourceJump(pageIndex, yPt)}
         />
       </div>
       {library.undoIntent ? (

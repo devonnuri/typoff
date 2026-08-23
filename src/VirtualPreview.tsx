@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { renderTypstPage } from './typst'
-import { createPageLruCache, type TypstPageInfo } from './virtualPreview'
+import {
+  computeClickedYPt,
+  createPageLruCache,
+  type TypstPageInfo,
+} from './virtualPreview'
 
 type VirtualPreviewProps = {
   documentId: string
   pages: TypstPageInfo[]
   zoom: number
   scrollTarget?: { pageIndex: number; nonce: number } | null
+  /** Invoked when a rendered page is clicked with its index and Y in points. */
+  onPageClick?: (pageIndex: number, yPt: number) => void
 }
 
 function createSvgUrl(svg: string) {
@@ -23,6 +29,7 @@ export function VirtualPreview({
   pages,
   zoom,
   scrollTarget,
+  onPageClick,
 }: VirtualPreviewProps) {
   const [urls, setUrls] = useState<Map<number, string>>(() => new Map())
   const [errors, setErrors] = useState<Map<number, string>>(() => new Map())
@@ -176,6 +183,22 @@ export function VirtualPreview({
             height: `${page.height * zoom}px`,
           }}
           aria-label={`Page ${pageIndex + 1}`}
+          onClick={
+            onPageClick && urls.get(pageIndex)
+              ? (event) => {
+                  // Ignore text-selection drags so highlighting content in
+                  // the preview does not yank the editor cursor around.
+                  if (window.getSelection()?.toString()) {
+                    return
+                  }
+                  const rect = event.currentTarget.getBoundingClientRect()
+                  onPageClick(
+                    pageIndex,
+                    computeClickedYPt(event.clientY, rect.top, zoom),
+                  )
+                }
+              : undefined
+          }
         >
           {urls.get(pageIndex) ? (
             <img

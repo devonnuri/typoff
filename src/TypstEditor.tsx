@@ -90,12 +90,16 @@ const highlightStyle = HighlightStyle.define([
   { tag: tags.atom, color: TYPOFF_DARK_PALETTE.tokens.atom },
 ])
 
+/** Imperative cursor move request: `nonce` distinguishes repeated offsets. */
+export type EditorCursorTarget = { offset: number; nonce: number }
+
 type TypstEditorProps = {
   value: string
   path: string
   diagnostics: TypstDiagnostic[]
   onChange: (value: string) => void
   onCursorClick?: (offset: number) => void
+  cursorTarget?: EditorCursorTarget | null
 }
 
 export function TypstEditor({
@@ -104,11 +108,13 @@ export function TypstEditor({
   diagnostics,
   onChange,
   onCursorClick,
+  cursorTarget,
 }: TypstEditorProps) {
   const editorHostRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const onChangeRef = useRef(onChange)
   const onCursorClickRef = useRef(onCursorClick)
+  const handledCursorNonceRef = useRef<number | null>(null)
 
   useEffect(() => {
     onChangeRef.current = onChange
@@ -186,6 +192,22 @@ export function TypstEditor({
       })
     view.dispatch({ effects: setDiagnosticMarkers.of(markers) })
   }, [diagnostics, path, value])
+
+  // Imperative cursor jumps from the preview pane: move the selection to the
+  // mapped source offset (clamped to the document) and scroll it into view.
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view || !cursorTarget || handledCursorNonceRef.current === cursorTarget.nonce) {
+      return
+    }
+    handledCursorNonceRef.current = cursorTarget.nonce
+    const anchor = Math.min(Math.max(cursorTarget.offset, 0), view.state.doc.length)
+    view.dispatch({
+      selection: { anchor },
+      scrollIntoView: true,
+    })
+    view.focus()
+  }, [cursorTarget])
 
   return <div className="editor-host" ref={editorHostRef} />
 }

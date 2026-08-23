@@ -18,6 +18,8 @@ interface PreviewPaneProps {
   previewDocument: PreviewDocument | null
   /** Scroll target for VirtualPreview: `{ pageIndex, nonce }` or null. */
   previewScrollTarget: { pageIndex: number; nonce: number } | null
+  /** Invoked when a rendered preview page is clicked: `(pageIndex, yPt)`. */
+  onPageClick?: (pageIndex: number, yPt: number) => void
 }
 
 export function PreviewPane({
@@ -33,6 +35,7 @@ export function PreviewPane({
   previewError,
   previewDocument,
   previewScrollTarget,
+  onPageClick,
 }: PreviewPaneProps) {
   return (
     <section className="preview-pane">
@@ -114,6 +117,7 @@ export function PreviewPane({
             pages={previewDocument.pages}
             zoom={zoom}
             scrollTarget={previewScrollTarget}
+            onPageClick={onPageClick}
           />
         ) : (
           <div className="empty-state">

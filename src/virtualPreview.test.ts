@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  computeClickedYPt,
   cropSvgToPage,
   createDocumentRequestGate,
   createPageLruCache,
@@ -7,6 +8,23 @@ import {
   normalizePageOffsets,
   stripSvgForeignObjects,
 } from './virtualPreview'
+
+describe('preview click → source Y', () => {
+  it('converts a click Y from screen pixels into document points', () => {
+    // 300px below the page top at zoom 1 → 300pt.
+    expect(computeClickedYPt(400, 100, 1)).toBe(300)
+  })
+
+  it('divides by zoom so higher zoom levels map to the same points', () => {
+    expect(computeClickedYPt(400, 100, 2)).toBe(150)
+    expect(computeClickedYPt(400, 100, 0.5)).toBe(600)
+  })
+
+  it('yields zero and negative values for clicks above the page top', () => {
+    expect(computeClickedYPt(100, 100, 1)).toBe(0)
+    expect(computeClickedYPt(50, 100, 1)).toBe(-50)
+  })
+})
 
 it('invalidates queued page work as soon as a newer compile is requested', () => {
   const gate = createDocumentRequestGate()

@@ -12,6 +12,7 @@ import { CursorLookupThrottle } from '../cursorLookup'
 import {
   compileTypstWorkspace,
   disposeTypstWorker,
+  locateSourceOffset,
   locateTypstCursor,
   retryAfterFatalError,
 } from '../typst'
@@ -56,6 +57,10 @@ export function usePreviewPipeline({
   const [workspaceRevision, setWorkspaceRevision] = useState(0)
   const [previewScrollTarget, setPreviewScrollTarget] = useState<{
     pageIndex: number
+    nonce: number
+  } | null>(null)
+  const [cursorTarget, setCursorTarget] = useState<{
+    offset: number
     nonce: number
   } | null>(null)
 
@@ -308,6 +313,31 @@ export function usePreviewPipeline({
     }
   }
 
+  // Maps a click on a rendered preview page back to a source offset and
+  // moves the editor cursor there. Errors are silently ignored: not every
+  // rendered position has a mappable source location.
+  const handleSourceJump = async (pageIndex: number, yPt: number) => {
+    const currentActiveFileId = latestActiveFileIdRef.current
+    const content = latestContentRef.current
+    if (!currentActiveFileId || !content || previewState === 'rendering') {
+      return
+    }
+    const requestId = ++cursorLookupRef.current
+    try {
+      const offset = await locateSourceOffset(
+        buildTypstWorkspace(latestFilesRef.current, currentActiveFileId, content),
+        pageIndex,
+        yPt,
+      )
+      if (requestId !== cursorLookupRef.current) {
+        return
+      }
+      setCursorTarget({ offset, nonce: requestId })
+    } catch {
+      // The clicked area has no mappable source position; leave the cursor.
+    }
+  }
+
   const handleExportSvg = async () => {
     if (!previewDocument) {
       return
@@ -334,6 +364,7 @@ export function usePreviewPipeline({
     setAutoPreview,
     workspaceRevision,
     previewScrollTarget,
+    cursorTarget,
     // actions
     queueRender,
     beginSourceSwitch,
@@ -341,6 +372,7 @@ export function usePreviewPipeline({
     bumpWorkspaceRevision,
     reportInvalidPath,
     handleCursorClick,
+    handleSourceJump,
     handleExportSvg,
   }
 }
