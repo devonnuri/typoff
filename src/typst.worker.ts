@@ -15,6 +15,7 @@ import {
   createDocumentRequestGate,
   isolateSvgPage,
   normalizePageOffsets,
+  stripSvgForeignObjects,
   type TypstPageInfo,
 } from './virtualPreview'
 import { OFFLINE_FONT_URLS } from './offlineAssets'
@@ -169,7 +170,8 @@ workerScope.onmessage = (event: MessageEvent<TypstWorkerRequest>) => {
             },
           },
         })
-        return isolateSvgPage(rendered, request.pageIndex, page)
+          const sanitized = stripSvgForeignObjects(rendered)
+          return isolateSvgPage(sanitized, request.pageIndex, page)
       })
       if (!requestGate.isCurrent(requestEpoch)) {
         throw new Error('Typst preview request was superseded')

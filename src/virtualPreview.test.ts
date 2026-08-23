@@ -5,6 +5,7 @@ import {
   createPageLruCache,
   isolateSvgPage,
   normalizePageOffsets,
+  stripSvgForeignObjects,
 } from './virtualPreview'
 
 it('invalidates queued page work as soon as a newer compile is requested', () => {
@@ -60,6 +61,32 @@ describe('page SVG cropping', () => {
     expect(isolated).toContain('viewBox="0 0 780 1080"')
     expect(isolated).not.toContain('PAGE ONE')
     expect(isolated.match(/class="typst-page"/g)).toHaveLength(1)
+  })
+})
+
+describe('foreignObject sanitization', () => {
+  it('removes foreignObject semantic overlays while preserving vector text', () => {
+    const svg = [
+      '<svg viewBox="0 0 780 1080" width="780" height="1080">',
+      '<g class="typst-page">',
+      '<g class="typst-text"><use href="#glyph-a" /></g>',
+      '<foreignObject x="0" y="0" width="100" height="20"><h5:div class="tsel">Hello</h5:div></foreignObject>',
+      '</g>',
+      '</svg>',
+    ].join('')
+
+    const sanitized = stripSvgForeignObjects(svg)
+
+    expect(sanitized).not.toContain('<foreignObject')
+    expect(sanitized).not.toContain('Hello')
+    expect(sanitized).toContain('<g class="typst-text"><use href="#glyph-a" /></g>')
+  })
+
+  it('removes self-closing foreignObject nodes', () => {
+    const svg =
+      '<svg><g class="typst-page"><foreignObject x="0" y="0" width="1" height="1" /></g></svg>'
+
+    expect(stripSvgForeignObjects(svg)).toBe('<svg><g class="typst-page"></g></svg>')
   })
 })
 

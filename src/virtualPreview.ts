@@ -64,6 +64,25 @@ function findElementEnd(svg: string, start: number, tagName: string): number {
   throw new Error(`Typst renderer returned an unclosed <${tagName}> element`)
 }
 
+export function stripSvgForeignObjects(svg: string): string {
+  const foreignObjectStart = /<foreignObject\b[^>]*>/g
+  let sanitized = svg
+  let match: RegExpExecArray | null
+
+  while ((match = foreignObjectStart.exec(sanitized))) {
+    const start = match.index
+    const opening = match[0]
+    const end = opening.endsWith('/>')
+      ? foreignObjectStart.lastIndex
+      : findElementEnd(sanitized, start, 'foreignObject')
+
+    sanitized = sanitized.slice(0, start) + sanitized.slice(end)
+    foreignObjectStart.lastIndex = start
+  }
+
+  return sanitized
+}
+
 export function isolateSvgPage(
   svg: string,
   pageIndex: number,
