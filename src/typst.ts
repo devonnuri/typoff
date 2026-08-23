@@ -17,6 +17,16 @@ export type TypstCursorResult = {
   pageIndex: number
 }
 
+export type TypstExportedPage = {
+  pageIndex: number
+  svg: string
+}
+
+export type TypstExportResult = {
+  documentId: string
+  pages: TypstExportedPage[]
+}
+
 type TypstWorkerRequestBody =
   | { type: 'compile'; workspace: TypstWorkspace }
   | {
@@ -25,6 +35,7 @@ type TypstWorkerRequestBody =
       pageIndex: number
     }
   | { type: 'locate-cursor'; workspace: TypstWorkspace; offset: number }
+  | { type: 'export-svg-pages'; documentId: string }
 
 export type TypstWorkerRequest = TypstWorkerRequestBody & { id: number }
 
@@ -32,6 +43,7 @@ type TypstWorkerResponse =
   | ({ id: number; type: 'compile-result' } & TypstCompileResult)
   | ({ id: number; type: 'page-result' } & TypstPageResult)
   | ({ id: number; type: 'cursor-result' } & TypstCursorResult)
+  | ({ id: number; type: 'export-result' } & TypstExportResult)
   | { id: number; type: 'error'; message: string }
 
 export type TypstWorkerLike = {
@@ -41,7 +53,11 @@ export type TypstWorkerLike = {
   terminate(): void
 }
 
-type WorkerResult = TypstCompileResult | TypstPageResult | TypstCursorResult
+type WorkerResult =
+  | TypstCompileResult
+  | TypstPageResult
+  | TypstCursorResult
+  | TypstExportResult
 
 type PendingRequest = {
   resolve(result: WorkerResult): void
@@ -95,6 +111,9 @@ export function createTypstWorkerClient(
     } else if (response.type === 'page-result') {
       const { documentId, pageIndex, svg } = response
       waiting.resolve({ documentId, pageIndex, svg })
+    } else if (response.type === 'export-result') {
+      const { documentId, pages } = response
+      waiting.resolve({ documentId, pages })
     } else {
       waiting.resolve({ pageIndex: response.pageIndex })
     }
@@ -110,7 +129,7 @@ export function createTypstWorkerClient(
   return {
     compile(workspace: TypstWorkspace): Promise<TypstCompileResult> {
       return request({ type: 'compile', workspace }).then((result) => {
-        if ('pages' in result) {
+        if ('pages' in result && 'diagnostics' in result) {
           return result
         }
         throw new Error('Typst worker returned an unexpected page result')
@@ -132,6 +151,14 @@ export function createTypstWorkerClient(
           return result
         }
         throw new Error('Typst worker returned an unexpected cursor result')
+      })
+    },
+    exportSvgPages(documentId: string): Promise<TypstExportResult> {
+      return request({ type: 'export-svg-pages', documentId }).then((result) => {
+        if ('pages' in result && !('diagnostics' in result)) {
+          return result
+        }
+        throw new Error('Typst worker returned an unexpected export result')
       })
     },
     dispose() {
@@ -204,6 +231,17 @@ export function renderTypstPage(
   pageIndex: number,
 ): Promise<TypstPageResult> {
   return getWorkerClient().renderPage(documentId, pageIndex)
+}
+
+/**
+ * Renders every page of a compiled document as SVG via the worker.
+ * The Export-menu button wiring in App.tsx will call this through
+ * exportCurrentDocument (src/exportDocument.ts) once the App conflict clears.
+ */
+export function exportTypstPages(
+  documentId: string,
+): Promise<TypstExportedPage[]> {
+  return getWorkerClient().exportSvgPages(documentId).then((result) => result.pages)
 }
 
 export function locateTypstCursor(

@@ -142,32 +142,69 @@ workerScope.onmessage = (event: MessageEvent<TypstWorkerRequest>) => {
         return
       }
 
-      if (!currentDocument || currentDocument.id !== request.documentId) {
-        throw new Error('The requested Typst document is no longer available')
+      if (request.type === 'export-svg-pages') {
+        if (!currentDocument || currentDocument.id !== request.documentId) {
+          throw new Error('The requested Typst document is no longer available')
+        }
+        const document = currentDocument
+        const pages: Array<{ pageIndex: number; svg: string }> = []
+        // Render sequentially so every page reuses the same warm session slot
+        // without concurrent resets racing each other.
+        for (let pageIndex = 0; pageIndex < document.pages.length; pageIndex++) {
+          const svg = await renderDocumentPage(
+            sessionRenderer,
+            renderSessionCache,
+            request.documentId,
+            document.artifact,
+            pageIndex,
+            document.pages[pageIndex],
+          )
+          pages.push({ pageIndex, svg })
+        }
+        if (!requestGate.isCurrent(requestEpoch)) {
+          throw new Error('Typst preview request was superseded')
+        }
+        workerScope.postMessage({
+          id: request.id,
+          type: 'export-result',
+          documentId: request.documentId,
+          pages,
+        })
+        return
       }
-      const document = currentDocument
-      const page = document.pages[request.pageIndex]
-      if (!page) {
-        throw new Error(`Typst page ${request.pageIndex + 1} does not exist`)
+
+      if (request.type === 'render-page') {
+        if (!currentDocument || currentDocument.id !== request.documentId) {
+          throw new Error('The requested Typst document is no longer available')
+        }
+        const document = currentDocument
+        const page = document.pages[request.pageIndex]
+        if (!page) {
+          throw new Error(`Typst page ${request.pageIndex + 1} does not exist`)
+        }
+        const svg = await renderDocumentPage(
+          sessionRenderer,
+          renderSessionCache,
+          request.documentId,
+          document.artifact,
+          request.pageIndex,
+          page,
+        )
+        if (!requestGate.isCurrent(requestEpoch)) {
+          throw new Error('Typst preview request was superseded')
+        }
+        workerScope.postMessage({
+          id: request.id,
+          type: 'page-result',
+          documentId: request.documentId,
+          pageIndex: request.pageIndex,
+          svg,
+        })
+        return
       }
-      const svg = await renderDocumentPage(
-        sessionRenderer,
-        renderSessionCache,
-        request.documentId,
-        document.artifact,
-        request.pageIndex,
-        page,
-      )
-      if (!requestGate.isCurrent(requestEpoch)) {
-        throw new Error('Typst preview request was superseded')
-      }
-      workerScope.postMessage({
-        id: request.id,
-        type: 'page-result',
-        documentId: request.documentId,
-        pageIndex: request.pageIndex,
-        svg,
-      })
+
+      // All known request types are handled above; this is a safety net.
+      throw new Error(`Unknown Typst worker request type`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       workerScope.postMessage({ id: request.id, type: 'error', message })

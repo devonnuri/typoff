@@ -134,3 +134,32 @@ describe('Typst worker client', () => {
     }
   })
 })
+
+describe('Typst worker client svg export', () => {
+  it('requests every page as svg from an already compiled document', async () => {
+    const worker = new FakeWorker()
+    const client = createTypstWorkerClient(worker)
+    const exporting = client.exportSvgPages('doc-1')
+
+    expect(worker.posted).toEqual([
+      { id: 1, type: 'export-svg-pages', documentId: 'doc-1' },
+    ])
+    worker.reply({
+      id: 1,
+      type: 'export-result',
+      documentId: 'doc-1',
+      pages: [
+        { pageIndex: 0, svg: '<svg id="one" />' },
+        { pageIndex: 1, svg: '<svg id="two" />' },
+      ],
+    })
+
+    await expect(exporting).resolves.toEqual({
+      documentId: 'doc-1',
+      pages: [
+        { pageIndex: 0, svg: '<svg id="one" />' },
+        { pageIndex: 1, svg: '<svg id="two" />' },
+      ],
+    })
+  })
+})
