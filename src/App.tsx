@@ -8,6 +8,7 @@ import {
   createRenderVersionGate,
   synchronizeRenderTransition,
 } from './renderVersion'
+import { CursorLookupThrottle } from './cursorLookup'
 import {
   compileTypstWorkspace,
   disposeTypstWorker,
@@ -92,6 +93,10 @@ function App() {
   const latestActiveFileIdRef = useRef(activeFileId)
   const latestActiveFileNameRef = useRef<string | undefined>(undefined)
   const cursorLookupRef = useRef(0)
+  const cursorThrottleRef = useRef<CursorLookupThrottle | null>(null)
+  if (cursorThrottleRef.current === null) {
+    cursorThrottleRef.current = new CursorLookupThrottle()
+  }
   latestFilesRef.current = files
   latestActiveFileIdRef.current = activeFileId
 
@@ -493,6 +498,29 @@ function App() {
     if (!currentActiveFileId || !content || !previewDocument) {
       return
     }
+    const cursorThrottle = cursorThrottleRef.current
+    if (!cursorThrottle) {
+      return
+    }
+    const cacheKey = `${content.length}:${offset}`
+    const cachedPageIndex = cursorThrottle.cached(cacheKey)
+    if (cachedPageIndex !== undefined) {
+      if (
+        cachedPageIndex < 0 ||
+        cachedPageIndex >= previewDocument.pages.length
+      ) {
+        return
+      }
+      const cachedRequestId = ++cursorLookupRef.current
+      setPreviewScrollTarget({
+        pageIndex: cachedPageIndex,
+        nonce: cachedRequestId,
+      })
+      return
+    }
+    if (!cursorThrottle.request(cacheKey)) {
+      return
+    }
     const requestId = ++cursorLookupRef.current
     const workspace = buildTypstWorkspace(
       latestFilesRef.current,
@@ -509,6 +537,7 @@ function App() {
       ) {
         return
       }
+      cursorThrottle.remember(cacheKey, result.pageIndex)
       setPreviewScrollTarget({ pageIndex: result.pageIndex, nonce: requestId })
     } catch {
       // A marker cannot be inserted safely at every Typst code position.
