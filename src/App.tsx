@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { buildSavePayload } from './autoSave'
+import { exportCurrentDocument } from './exportDocument'
 import { TypstEditor } from './TypstEditor'
 import { deleteFile, listFiles, saveFile, type StoredFile } from './storage'
 import {
@@ -72,6 +73,7 @@ function App() {
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [diagnostics, setDiagnostics] = useState<TypstDiagnostic[]>([])
   const [saveState, setSaveState] = useState<SaveState>('saved')
+  const [exportState, setExportState] = useState<'idle' | 'exporting'>('idle')
   const [autoPreview, setAutoPreview] = useState(true)
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [sidebarWidth, setSidebarWidth] = useState(240)
@@ -447,6 +449,21 @@ function App() {
     await saveTypstFile(activeFile.name, activeContent)
   }
 
+  const handleExportSvg = async () => {
+    if (!previewDocument) {
+      return
+    }
+    setExportState('exporting')
+    try {
+      const baseName = activeFile
+        ? activeFile.name.replace(/\.typ$/i, '')
+        : 'document'
+      await exportCurrentDocument(previewDocument.id, baseName)
+    } finally {
+      setExportState('idle')
+    }
+  }
+
   const handleRename = async () => {
     if (!renamingId) {
       return
@@ -761,6 +778,14 @@ function App() {
                 disabled={!activeFile}
               >
                 Export
+              </button>
+              <button
+                className="ghost"
+                onClick={handleExportSvg}
+                type="button"
+                disabled={!previewDocument || exportState === 'exporting'}
+              >
+                {exportState === 'exporting' ? 'Exporting…' : 'SVG'}
               </button>
               <button
                 className="ghost"
