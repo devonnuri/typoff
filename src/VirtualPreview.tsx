@@ -15,6 +15,9 @@ function createSvgUrl(svg: string) {
   )
 }
 
+// 24 MiB budget for cached page blob URLs.
+const PAGE_CACHE_MAX_BYTES = 24 * 1024 * 1024
+
 export function VirtualPreview({
   documentId,
   pages,
@@ -28,8 +31,14 @@ export function VirtualPreview({
   const documentIdRef = useRef(documentId)
   const mountedRef = useRef(true)
   const handledScrollNonceRef = useRef<number | null>(null)
+  // Byte-budgeted LRU: Typst SVGs vary wildly in size per page, so cap total
+  // bytes instead of page count. Blob URLs carry no size metadata, so we
+  // record `result.svg.length` at set() time — char count approximates bytes
+  // for ASCII-heavy SVG output (non-ASCII chars count as 1 instead of 2-4).
   const cacheRef = useRef(
-    createPageLruCache(6, (url) => URL.revokeObjectURL(url)),
+    createPageLruCache({ maxBytes: PAGE_CACHE_MAX_BYTES }, (url) =>
+      URL.revokeObjectURL(url),
+    ),
   )
 
   useEffect(() => {
@@ -66,7 +75,7 @@ export function VirtualPreview({
           return
         }
         const url = createSvgUrl(result.svg)
-        cacheRef.current.set(pageIndex, url)
+        cacheRef.current.set(pageIndex, url, result.svg.length)
         const retained = new Set(cacheRef.current.keys())
         setUrls((current) => {
           const next = new Map(

@@ -119,3 +119,120 @@ describe('page preview LRU', () => {
     ])
   })
 })
+
+describe('page preview LRU (byte mode)', () => {
+  it('evicts oldest entries first once the byte budget is exceeded', () => {
+    const revoked: string[] = []
+    const cache = createPageLruCache(
+      { maxBytes: 100 },
+      (url: string) => revoked.push(url),
+    )
+
+    cache.set(0, 'blob:0', 40)
+    cache.set(1, 'blob:1', 40)
+    expect(cache.totalBytes()).toBe(80)
+    expect(cache.keys()).toEqual([0, 1])
+
+    // 40 + 40 + 30 = 110 > 100 → page 0 evicted.
+    cache.set(2, 'blob:2', 30)
+    expect(cache.keys()).toEqual([1, 2])
+    expect(revoked).toEqual(['blob:0'])
+    expect(cache.totalBytes()).toBe(70)
+  })
+
+  it('keeps evicting until under budget', () => {
+    const revoked: string[] = []
+    const cache = createPageLruCache(
+      { maxBytes: 100 },
+      (url: string) => revoked.push(url),
+    )
+
+    cache.set(0, 'blob:0', 10)
+    cache.set(1, 'blob:1', 10)
+    cache.set(2, 'blob:2', 10)
+    // A huge new page forces multiple evictions but is never evicted itself,
+    // even though it alone exceeds the budget.
+    cache.set(3, 'blob:3', 500)
+    expect(cache.keys()).toEqual([3])
+    expect(revoked).toEqual(['blob:0', 'blob:1', 'blob:2'])
+    expect(cache.totalBytes()).toBe(500)
+  })
+
+  it('get() refreshes recency and protects recent pages from eviction', () => {
+    const revoked: string[] = []
+    const cache = createPageLruCache(
+      { maxBytes: 100 },
+      (url: string) => revoked.push(url),
+    )
+
+    cache.set(0, 'blob:0', 40)
+    cache.set(1, 'blob:1', 40)
+    // Touching page 0 moves it behind page 1 in eviction order.
+    expect(cache.get(0)).toBe('blob:0')
+
+    cache.set(2, 'blob:2', 40)
+    // Without the refresh page 0 would have been evicted; instead page 1 goes.
+    expect(cache.keys()).toEqual([0, 2])
+    expect(revoked).toEqual(['blob:1'])
+    expect(cache.totalBytes()).toBe(80)
+
+    // Re-setting an existing page replaces its recorded size and revokes
+    // the old URL.
+    cache.set(0, 'blob:0b', 50)
+    expect(revoked).toEqual(['blob:1', 'blob:0'])
+    expect(cache.totalBytes()).toBe(90)
+  })
+
+  it('falls back to estimateBytes when set has no explicit size', () => {
+    const revoked: string[] = []
+    const cache = createPageLruCache(
+      { maxBytes: 100 },
+      (url: string) => revoked.push(url),
+      (url: string) => url.length,
+    )
+
+    cache.set(0, 'blob:0') // estimateBytes → 6
+    cache.set(1, 'blob:1')
+    expect(cache.totalBytes()).toBe(12)
+
+    cache.set(2, 'blob:longer-url') // estimateBytes → 15; total 27 < 100
+    expect(cache.totalBytes()).toBe(27)
+    expect(cache.keys()).toEqual([0, 1, 2])
+  })
+
+  it('clear() resets totalBytes and revokes every URL', () => {
+    const revoked: string[] = []
+    const cache = createPageLruCache(
+      { maxBytes: 100 },
+      (url: string) => revoked.push(url),
+    )
+
+    cache.set(0, 'blob:0', 40)
+    cache.set(1, 'blob:1', 40)
+    cache.clear()
+    expect(cache.totalBytes()).toBe(0)
+    expect(cache.keys()).toEqual([])
+    expect(revoked).toEqual(['blob:0', 'blob:1'])
+
+    // Cache is usable after clear().
+    cache.set(2, 'blob:2', 40)
+    expect(cache.keys()).toEqual([2])
+    expect(cache.totalBytes()).toBe(40)
+  })
+
+  it('count mode still behaves exactly as before', () => {
+    const revoked: string[] = []
+    const cache = createPageLruCache(2, (url: string) => revoked.push(url))
+
+    for (let page = 0; page < 4; page += 1) {
+      cache.set(page, `blob:${page}`)
+    }
+    expect(cache.keys()).toEqual([2, 3])
+    expect(revoked).toEqual(['blob:0', 'blob:1'])
+    expect(cache.get(2)).toBe('blob:2')
+
+    cache.set(4, 'blob:4')
+    expect(cache.keys()).toEqual([2, 4])
+    expect(revoked).toEqual(['blob:0', 'blob:1', 'blob:3'])
+  })
+})

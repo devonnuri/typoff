@@ -120,11 +120,32 @@ export function isolateSvgPage(
   })
 }
 
+export type PageLruCapacity = number | { maxBytes: number }
+
+/**
+ * LRU cache for rendered page blob URLs.
+ *
+ * - Count mode: `capacity` is a plain number — at most that many pages are
+ *   kept (legacy behavior).
+ * - Byte mode: `capacity` is `{ maxBytes }` and each entry records its size
+ *   via `set(page, url, byteSize)` (or `estimateBytes(url)`); the oldest
+ *   entry is revoked whenever total recorded bytes exceed `maxBytes`.
+ */
 export function createPageLruCache(
-  capacity: number,
+  capacity: PageLruCapacity,
   revoke: (url: string) => void,
+  estimateBytes?: (url: string) => number,
 ) {
   const entries = new Map<number, string>()
+  const byteSizes = new Map<number, number>()
+  const maxBytes = typeof capacity === 'number' ? Infinity : capacity.maxBytes
+
+  const resolveBytes = (page: number, url: string, byteSize?: number) => {
+    const recorded = byteSizes.get(page)
+    return byteSize ?? (recorded ?? (estimateBytes ? estimateBytes(url) : 0))
+  }
+
+  let total = 0
 
   return {
     get(page: number) {
@@ -136,30 +157,47 @@ export function createPageLruCache(
       entries.set(page, value)
       return value
     },
-    set(page: number, url: string) {
+    set(page: number, url: string, byteSize?: number) {
       const previous = entries.get(page)
       if (previous) {
         revoke(previous)
+        total -= byteSizes.get(page) ?? 0
+        byteSizes.delete(page)
         entries.delete(page)
       }
       entries.set(page, url)
-      while (entries.size > capacity) {
+      const resolved = resolveBytes(page, url, byteSize)
+      byteSizes.set(page, resolved)
+      total += resolved
+      // In byte mode, always keep at least one entry even when it alone
+      // exceeds the budget.
+      while (
+        (typeof capacity === 'number' && entries.size > capacity) ||
+        (total > maxBytes && entries.size > 1)
+      ) {
         const oldest = entries.entries().next().value as [number, string] | undefined
         if (!oldest) {
           break
         }
         entries.delete(oldest[0])
+        total -= byteSizes.get(oldest[0]) ?? 0
+        byteSizes.delete(oldest[0])
         revoke(oldest[1])
       }
     },
     keys() {
       return [...entries.keys()]
     },
+    totalBytes() {
+      return total
+    },
     clear() {
       for (const url of entries.values()) {
         revoke(url)
       }
       entries.clear()
+      byteSizes.clear()
+      total = 0
     },
   }
 }
