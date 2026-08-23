@@ -4,6 +4,12 @@ import { buildSavePayload } from './autoSave'
 import { mapShortcutToAction, type AppShortcutAction } from './appShortcuts'
 import { exportCurrentDocument } from './exportDocument'
 import { TypstEditor } from './TypstEditor'
+import {
+  MIN_PANE_WIDTH,
+  MIN_SIDEBAR_WIDTH,
+  applyKeyboardResize,
+  isResizeArrowKey,
+} from './resizeLogic'
 import { deleteFile, listFiles, saveFile, type StoredFile } from './storage'
 import {
   getPreviewPolicy,
@@ -771,6 +777,49 @@ function App() {
     window.addEventListener('mouseup', onUp)
   }
 
+  const handleResizeKeyDown =
+    (mode: 'sidebar' | 'editor') =>
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      const workspace = workspaceRef.current
+      if (!workspace || !isResizeArrowKey(event.key)) {
+        return
+      }
+      const key = event.key
+      event.preventDefault()
+
+      const handleWidth = 8
+      const total = workspace.clientWidth
+      const handles = isSidebarOpen ? handleWidth * 2 : handleWidth
+      const minSidebar = MIN_SIDEBAR_WIDTH
+      const minPane = MIN_PANE_WIDTH
+
+      if (mode === 'sidebar') {
+        const maxSidebar = Math.max(minSidebar, total - handles - minPane * 2)
+        const nextSidebar = applyKeyboardResize(sidebarWidth, key, {
+          min: minSidebar,
+          max: maxSidebar,
+        })
+        const remaining = total - nextSidebar - handles
+        const nextEditor = Math.min(editorWidth, remaining - minPane)
+
+        setSidebarWidth(nextSidebar)
+        setEditorWidth(nextEditor)
+        setPreviewWidth(remaining - nextEditor)
+        return
+      }
+
+      const remaining = total - (isSidebarOpen ? sidebarWidth : 0) - handles
+      const nextEditor = applyKeyboardResize(editorWidth, key, {
+        min: minPane,
+        max: Math.max(minPane, remaining - minPane),
+      })
+
+      setEditorWidth(nextEditor)
+      setPreviewWidth(remaining - nextEditor)
+    }
+
+  const workspaceTotal = workspaceRef.current?.clientWidth ?? window.innerWidth
+
   return (
     <div className="app">
       <div
@@ -901,8 +950,17 @@ function App() {
           <div
             className="resize-handle"
             onMouseDown={(event) => startResize('sidebar', event.clientX)}
+            onKeyDown={handleResizeKeyDown('sidebar')}
             role="separator"
-            aria-label="Resize file browser"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            tabIndex={0}
+            aria-valuenow={sidebarWidth}
+            aria-valuemin={MIN_SIDEBAR_WIDTH}
+            aria-valuemax={Math.max(
+              MIN_SIDEBAR_WIDTH,
+              workspaceTotal - (isSidebarOpen ? 16 : 8) - MIN_PANE_WIDTH * 2,
+            )}
           />
         ) : null}
 
@@ -971,8 +1029,19 @@ function App() {
         <div
           className="resize-handle"
           onMouseDown={(event) => startResize('editor', event.clientX)}
+          onKeyDown={handleResizeKeyDown('editor')}
           role="separator"
-          aria-label="Resize editor and preview"
+          aria-orientation="vertical"
+          aria-label="Resize editor preview split"
+          tabIndex={0}
+          aria-valuenow={editorWidth}
+          aria-valuemin={MIN_PANE_WIDTH}
+          aria-valuemax={Math.max(
+            MIN_PANE_WIDTH,
+            workspaceTotal -
+              (isSidebarOpen ? sidebarWidth + 16 : 8) -
+              MIN_PANE_WIDTH * 2,
+          )}
         />
 
         <section className="preview-pane">
