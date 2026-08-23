@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   compileTypstWorkspace,
   createTypstWorkerClient,
+  locateSourceOffset,
   resetTypstWorkerForTest,
   setTypstWorkerFactory,
   type TypstWorkerLike,
@@ -161,5 +162,50 @@ describe('Typst worker client svg export', () => {
         { pageIndex: 1, svg: '<svg id="two" />' },
       ],
     })
+  })
+})
+
+describe('locateSourceOffset', () => {
+  it('maps a preview click to a source offset through the worker', async () => {
+    const workers: FakeWorker[] = []
+    setTypstWorkerFactory(() => {
+      const worker = new FakeWorker()
+      workers.push(worker)
+      return worker
+    })
+    try {
+      const locating = locateSourceOffset(workspace, 2, 140.5)
+
+      expect(workers[0].posted).toEqual([
+        { id: 1, type: 'locate-source', workspace, pageIndex: 2, yPt: 140.5 },
+      ])
+      workers[0].reply({ id: 1, type: 'source-result', offset: 42 })
+
+      await expect(locating).resolves.toBe(42)
+    } finally {
+      resetTypstWorkerForTest()
+    }
+  })
+
+  it('surfaces worker errors for unmappable click areas', async () => {
+    const workers: FakeWorker[] = []
+    setTypstWorkerFactory(() => {
+      const worker = new FakeWorker()
+      workers.push(worker)
+      return worker
+    })
+    try {
+      const locating = locateSourceOffset(workspace, 9, 0)
+
+      workers[0].reply({
+        id: 1,
+        type: 'error',
+        message: 'The clicked area has no mappable source position',
+      })
+
+      await expect(locating).rejects.toThrow(/no mappable source position/)
+    } finally {
+      resetTypstWorkerForTest()
+    }
   })
 })

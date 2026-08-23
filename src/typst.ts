@@ -35,6 +35,13 @@ type TypstWorkerRequestBody =
       pageIndex: number
     }
   | { type: 'locate-cursor'; workspace: TypstWorkspace; offset: number }
+  | {
+      type: 'locate-source'
+      documentId?: string
+      workspace: TypstWorkspace
+      pageIndex: number
+      yPt: number
+    }
   | { type: 'export-svg-pages'; documentId: string }
 
 export type TypstWorkerRequest = TypstWorkerRequestBody & { id: number }
@@ -43,6 +50,7 @@ type TypstWorkerResponse =
   | ({ id: number; type: 'compile-result' } & TypstCompileResult)
   | ({ id: number; type: 'page-result' } & TypstPageResult)
   | ({ id: number; type: 'cursor-result' } & TypstCursorResult)
+  | { id: number; type: 'source-result'; offset: number }
   | ({ id: number; type: 'export-result' } & TypstExportResult)
   | { id: number; type: 'error'; message: string }
 
@@ -57,6 +65,7 @@ type WorkerResult =
   | TypstCompileResult
   | TypstPageResult
   | TypstCursorResult
+  | { offset: number }
   | TypstExportResult
 
 type PendingRequest = {
@@ -114,6 +123,8 @@ export function createTypstWorkerClient(
     } else if (response.type === 'export-result') {
       const { documentId, pages } = response
       waiting.resolve({ documentId, pages })
+    } else if (response.type === 'source-result') {
+      waiting.resolve({ offset: response.offset })
     } else {
       waiting.resolve({ pageIndex: response.pageIndex })
     }
@@ -152,6 +163,20 @@ export function createTypstWorkerClient(
         }
         throw new Error('Typst worker returned an unexpected cursor result')
       })
+    },
+    locateSource(
+      workspace: TypstWorkspace,
+      pageIndex: number,
+      yPt: number,
+    ): Promise<number> {
+      return request({ type: 'locate-source', workspace, pageIndex, yPt }).then(
+        (result) => {
+          if ('offset' in result && !('pages' in result) && !('pageIndex' in result)) {
+            return result.offset
+          }
+          throw new Error('Typst worker returned an unexpected source result')
+        },
+      )
     },
     exportSvgPages(documentId: string): Promise<TypstExportResult> {
       return request({ type: 'export-svg-pages', documentId }).then((result) => {
@@ -249,6 +274,18 @@ export function locateTypstCursor(
   offset: number,
 ): Promise<TypstCursorResult> {
   return getWorkerClient().locateCursor(workspace, offset)
+}
+
+/**
+ * Maps a click at (pageIndex, yPt) in the rendered preview back to a source
+ * character offset of the main file via the worker's line metadata table.
+ */
+export function locateSourceOffset(
+  workspace: TypstWorkspace,
+  pageIndex: number,
+  yPt: number,
+): Promise<number> {
+  return getWorkerClient().locateSource(workspace, pageIndex, yPt)
 }
 
 export function disposeTypstWorker() {

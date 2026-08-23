@@ -4,6 +4,7 @@ import { TypstSnippet } from '@myriaddreamin/typst.ts/contrib/snippet'
 import compilerWasmUrl from '@myriaddreamin/typst-ts-web-compiler/pkg/typst_ts_web_compiler_bg.wasm?url'
 import rendererWasmUrl from '@myriaddreamin/typst-ts-renderer/pkg/typst_ts_renderer_bg.wasm?url'
 import {
+  collectSourceJumpPoints,
   compileTypstWorkspace,
   createSerialExecutor,
   locateTypstCursorPage,
@@ -138,6 +139,33 @@ workerScope.onmessage = (event: MessageEvent<TypstWorkerRequest>) => {
           id: request.id,
           type: 'cursor-result',
           pageIndex,
+        })
+        return
+      }
+
+      if (request.type === 'locate-source') {
+        const points = await collectSourceJumpPoints(runtime, request.workspace)
+        const candidates = points.filter(
+          (point) => point.page === request.pageIndex + 1,
+        )
+        if (candidates.length === 0) {
+          throw new Error('The clicked area has no mappable source position')
+        }
+        // Points are sorted ascending by (page, y): keep the last line whose
+        // y is within the 6pt tolerance above the click, else the first line.
+        let chosen = candidates[0]
+        for (const point of candidates) {
+          if (point.y <= request.yPt + 6) {
+            chosen = point
+          }
+        }
+        if (!requestGate.isCurrent(requestEpoch)) {
+          throw new Error('Typst source jump request was superseded')
+        }
+        workerScope.postMessage({
+          id: request.id,
+          type: 'source-result',
+          offset: chosen.offset,
         })
         return
       }

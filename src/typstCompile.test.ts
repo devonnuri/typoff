@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  collectSourceJumpPoints,
   compileTypstWorkspace,
   createSerialExecutor,
   locateTypstCursorPage,
@@ -105,6 +106,142 @@ describe('cursor page lookup', () => {
       selector: '<typoff-cursor-test>',
       field: 'value',
     })
+  })
+})
+
+describe('source jump points', () => {
+  const MARKER = '#context [#metadata((page: here().page(), y: here().position().y))]'
+
+  function createCapturingRuntime(queryResult: unknown) {
+    const sources = new Map<string, string>()
+    const queryCalls: unknown[] = []
+    return {
+      runtime: {
+        resetShadow() {
+          sources.clear()
+        },
+        addSource(path: string, content: string) {
+          sources.set(path, content)
+        },
+        async query(options: unknown) {
+          queryCalls.push(options)
+          return queryResult
+        },
+      },
+      sources,
+      queryCalls,
+    }
+  }
+
+  it('inserts the marker at every line start without adding a newline', async () => {
+    const { runtime, sources } = createCapturingRuntime([
+      { page: 1, y: 10 },
+      { page: 1, y: 20 },
+      { page: 1, y: 30 },
+    ])
+    const jumpWorkspace = {
+      mainFilePath: '/@memory/main.typ',
+      files: [
+        { path: '/@memory/main.typ', content: 'First line\nSecond line\nThird line' },
+        { path: '/@memory/shared.typ', content: '= Shared' },
+      ],
+    }
+
+    await collectSourceJumpPoints(runtime, jumpWorkspace)
+
+    expect(sources.get('/@memory/main.typ')).toBe(
+      `${MARKER}First line\n${MARKER}Second line\n${MARKER}Third line`,
+    )
+    // No added newline: removing every marker reconstructs the original.
+    const instrumented = sources.get('/@memory/main.typ') ?? ''
+    expect(instrumented.split(MARKER).join('')).toBe(
+      'First line\nSecond line\nThird line',
+    )
+  })
+
+  it('reconstructs correctly when a trailing newline exists', async () => {
+    const { runtime, sources } = createCapturingRuntime([
+      { page: 1, y: 10 },
+      { page: 1, y: 20 },
+    ])
+    const jumpWorkspace = {
+      mainFilePath: '/@memory/main.typ',
+      files: [{ path: '/@memory/main.typ', content: 'One\nTwo\n' }],
+    }
+
+    await collectSourceJumpPoints(runtime, jumpWorkspace)
+
+    // The trailing newline's end-of-content duplicate start is skipped.
+    expect(sources.get('/@memory/main.typ')).toBe(
+      `${MARKER}One\n${MARKER}Two\n`,
+    )
+  })
+
+  it('queries all metadata values and filters foreign records before zipping', async () => {
+    const { runtime, sources, queryCalls } = createCapturingRuntime([
+      { note: 'user metadata' },
+      { page: 1, y: 12.5 },
+      'a plain string',
+      { page: 'nope', y: 3 },
+      { page: 2, y: 40 },
+      null,
+      { page: -1, y: 0 },
+      Number.NaN,
+      { y: 5 },
+      { page: 2, y: 90 },
+    ])
+    const jumpWorkspace = {
+      mainFilePath: '/@memory/main.typ',
+      files: [
+        { path: '/@memory/main.typ', content: '#metadata("foreign")\nAlpha\nBeta' },
+      ],
+    }
+
+    const points = await collectSourceJumpPoints(runtime, jumpWorkspace)
+
+    expect(queryCalls[0]).toEqual({
+      mainFilePath: '/@memory/main.typ',
+      root: '/@memory',
+      selector: 'metadata',
+      field: 'value',
+    })
+    expect(sources.get('/@memory/main.typ')).toContain('#metadata("foreign")')
+    // Zip keeps document order of OUR entries: offsets 0, then line starts.
+    expect(points).toEqual([
+      { offset: 0, page: 1, y: 12.5 },
+      { offset: 21, page: 2, y: 40 },
+      { offset: 27, page: 2, y: 90 },
+    ])
+  })
+
+  it('throws when the filtered metadata count does not match the line count', async () => {
+    const { runtime } = createCapturingRuntime([{ page: 1, y: 1 }])
+    const jumpWorkspace = {
+      mainFilePath: '/@memory/main.typ',
+      files: [{ path: '/@memory/main.typ', content: 'A\nB' }],
+    }
+
+    await expect(collectSourceJumpPoints(runtime, jumpWorkspace)).rejects.toThrow(
+      'Typst source jump table is inconsistent',
+    )
+  })
+
+  it('sorts the resulting points ascending by page then y', async () => {
+    const { runtime } = createCapturingRuntime([
+      { page: 2, y: 30 },
+      { page: 1, y: 100 },
+      { page: 1, y: 20 },
+    ])
+    const jumpWorkspace = {
+      mainFilePath: '/@memory/main.typ',
+      files: [{ path: '/@memory/main.typ', content: 'A\nB\nC' }],
+    }
+
+    await expect(collectSourceJumpPoints(runtime, jumpWorkspace)).resolves.toEqual([
+      { offset: 4, page: 1, y: 20 },
+      { offset: 2, page: 1, y: 100 },
+      { offset: 0, page: 2, y: 30 },
+    ])
   })
 })
 
