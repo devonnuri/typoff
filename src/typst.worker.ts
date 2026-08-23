@@ -13,13 +13,12 @@ import {
 import type { TypstWorkerRequest } from './typst'
 import {
   createDocumentRequestGate,
-  isolateSvgPage,
   normalizePageOffsets,
-  stripSvgForeignObjects,
   type TypstPageInfo,
 } from './virtualPreview'
 import { OFFLINE_FONT_URLS } from './offlineAssets'
 import { OfflinePackageRegistry } from './offlinePackageRegistry'
+import { RenderSessionCache, renderDocumentPage, type TypstRendererLike } from './renderSessionCache'
 
 const workerScope = self as DedicatedWorkerGlobalScope
 const accessModel = new MemoryAccessModel()
@@ -30,6 +29,7 @@ let nextDocumentId = 1
 let currentDocument:
   | { id: string; artifact: Uint8Array; pages: TypstPageInfo[] }
   | undefined
+const renderSessionCache = new RenderSessionCache()
 
 $typst.setCompilerInitOptions({ getModule: () => compilerWasmUrl })
 $typst.setRendererInitOptions({ getModule: () => rendererWasmUrl })
@@ -87,6 +87,9 @@ workerScope.onmessage = (event: MessageEvent<TypstWorkerRequest>) => {
         throw new Error('Typst preview request was superseded')
       }
       const { runtime, renderer } = await getRuntime()
+      // The runtime driver exposes `createModule` but the shipped TypstRenderer
+      // type omits it, so view the renderer through our minimal seam instead.
+      const sessionRenderer = renderer as unknown as TypstRendererLike
       if (request.type === 'compile') {
         const result = await compileTypstWorkspace(runtime, request.workspace)
         if (!requestGate.isCurrent(requestEpoch)) {
@@ -104,19 +107,12 @@ workerScope.onmessage = (event: MessageEvent<TypstWorkerRequest>) => {
         }
 
         const artifact = result.artifact
-        const rendererPages = await renderer.runWithSession(async (session) => {
-          await renderer.manipulateData({
-            renderSession: session,
-            action: 'reset',
-            data: artifact,
-          })
-          return renderer.retrievePagesInfoFromSession(session)
-        })
-        const pages = normalizePageOffsets(rendererPages)
+        const documentId = `doc-${nextDocumentId++}`
+        const session = await renderSessionCache.acquire(sessionRenderer, documentId, artifact)
+        const pages = normalizePageOffsets(renderer.retrievePagesInfoFromSession(session))
         if (!requestGate.isCurrent(requestEpoch)) {
           throw new Error('Typst preview request was superseded')
         }
-        const documentId = `doc-${nextDocumentId++}`
         currentDocument = { id: documentId, artifact, pages }
         workerScope.postMessage({
           id: request.id,
@@ -154,25 +150,14 @@ workerScope.onmessage = (event: MessageEvent<TypstWorkerRequest>) => {
       if (!page) {
         throw new Error(`Typst page ${request.pageIndex + 1} does not exist`)
       }
-      const svg = await renderer.runWithSession(async (session) => {
-        await renderer.manipulateData({
-          renderSession: session,
-          action: 'reset',
-          data: document.artifact,
-        })
-        const rendered = renderer.renderSvgDiff({
-          renderSession: session,
-          window: {
-            lo: { x: 0, y: page.pageOffset },
-            hi: {
-              x: page.width,
-              y: page.pageOffset + page.height - 0.001,
-            },
-          },
-        })
-          const sanitized = stripSvgForeignObjects(rendered)
-          return isolateSvgPage(sanitized, request.pageIndex, page)
-      })
+      const svg = await renderDocumentPage(
+        sessionRenderer,
+        renderSessionCache,
+        request.documentId,
+        document.artifact,
+        request.pageIndex,
+        page,
+      )
       if (!requestGate.isCurrent(requestEpoch)) {
         throw new Error('Typst preview request was superseded')
       }
