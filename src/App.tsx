@@ -166,6 +166,9 @@ function App() {
 
     setEditorWidth(nextEditor)
     setPreviewWidth(nextPreview)
+    // Intentional: this effect re-balances panes on sidebar toggle only, and
+    // must not re-fire while the user drags the sidebar (sidebarWidth changes).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSidebarOpen])
 
   useEffect(() => {
@@ -243,6 +246,7 @@ function App() {
             return
           }
 
+          renderRetryCountRef.current = 0
           setDiagnostics(result.diagnostics)
           setPreviewError(null)
           if (result.documentId && result.pages.length > 0) {
@@ -255,6 +259,20 @@ function App() {
           if (!renderVersionRef.current.isCurrent(renderVersion)) {
             return
           }
+          // A dead worker rejects every request; retry once on a fresh worker.
+          if (
+            renderRetryCountRef.current < 1 &&
+            typeof error === 'object' &&
+            error !== null &&
+            'message' in error &&
+            String((error as Error).message).includes('worker')
+          ) {
+            renderRetryCountRef.current += 1
+            retryAfterFatalError()
+            scheduleRender()
+            return
+          }
+          renderRetryCountRef.current = 0
           setDiagnostics([])
           setPreviewState('error')
           setPreviewError(
@@ -295,6 +313,9 @@ function App() {
         window.clearTimeout(renderTimerRef.current)
       }
     }
+    // queueRender closes over activeContent/activeFileId, which are already
+    // listed; the function identity changes every render by design.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeContent, activeFileId, autoPreview, workspaceRevision])
 
   useEffect(() => {
@@ -823,6 +844,9 @@ function App() {
                 ) : (
                   <span>See the highlighted source and Problems pane.</span>
                 )}
+                <button className="ghost" type="button" onClick={handleRenderOnce}>
+                  Retry render
+                </button>
               </div>
             ) : previewDocument ? (
               <VirtualPreview

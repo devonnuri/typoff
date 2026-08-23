@@ -154,6 +154,8 @@ export function TypstEditor({
       view.destroy()
       viewRef.current = null
     }
+    // Initial mount only: external value updates are synced by the effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
