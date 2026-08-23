@@ -1,8 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
-import { buildSavePayload } from './autoSave'
 import { mapShortcutToAction, type AppShortcutAction } from './appShortcuts'
-import { exportCurrentDocument } from './exportDocument'
 import { TypstEditor } from './TypstEditor'
 import {
   MIN_PANE_WIDTH,
@@ -10,183 +8,58 @@ import {
   applyKeyboardResize,
   isResizeArrowKey,
 } from './resizeLogic'
-import { deleteFile, listFiles, saveFile, type StoredFile } from './storage'
-import {
-  getPreviewPolicy,
-  recordCompileDuration,
-} from './previewPolicy'
-import {
-  createRenderVersionGate,
-  synchronizeRenderTransition,
-} from './renderVersion'
-import { CursorLookupThrottle } from './cursorLookup'
-import { createDeleteIntent, UNDO_WINDOW_MS } from './deleteUndo'
-import { openTypstFile, saveTypstFile } from './fileIo'
-import {
-  compileTypstWorkspace,
-  disposeTypstWorker,
-  locateTypstCursor,
-  retryAfterFatalError,
-} from './typst'
-import {
-  buildTypstWorkspace,
-  toTypstVirtualPath,
-  type TypstDiagnostic,
-} from './typstWorkspace'
 import { VirtualPreview } from './VirtualPreview'
-import type { TypstPageInfo } from './virtualPreview'
-
-const DEFAULT_CONTENT = `// Typoff starter
-#set page(width: 780pt, height: 1080pt, margin: 48pt)
-#set text(font: "Libertinus Serif", size: 14pt)
-
-= Typoff
-An offline Typst editor built on Vite.
-
-#heading(level: 2)[Quick demo]
-- Real-time preview
-- Local files
-- Syntax highlighting
-
-#show math.equation: it => box(stroke: 0.6pt + rgb("0f7b6c"), inset: 8pt)[it]
-
-$sum_(i=1)^n i = n(n+1)/2$
-
-#align(center)[#text(size: 22pt)[Happy typesetting.]]
-`
-
-type PreviewState = 'idle' | 'rendering' | 'error'
-type SaveState = 'saved' | 'saving' | 'dirty'
-
-const sortFiles = (items: StoredFile[]) =>
-  [...items].sort((a, b) => b.updatedAt - a.updatedAt)
-
-const createId = () => {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID()
-  }
-  return `file-${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
+import {
+  useFileLibrary,
+  type FileLibraryPipelineBridge,
+} from './hooks/useFileLibrary'
+import { usePreviewPipeline } from './hooks/usePreviewPipeline'
 
 function App() {
-  const [files, setFiles] = useState<StoredFile[]>([])
-  const [activeFileId, setActiveFileId] = useState<string | null>(null)
-  const [activeContent, setActiveContent] = useState('')
-  const [previewDocument, setPreviewDocument] = useState<{
-    id: string
-    pages: TypstPageInfo[]
-  } | null>(null)
-  const [previewState, setPreviewState] = useState<PreviewState>('idle')
-  const [previewError, setPreviewError] = useState<string | null>(null)
-  const [diagnostics, setDiagnostics] = useState<TypstDiagnostic[]>([])
-  const [saveState, setSaveState] = useState<SaveState>('saved')
-  const [exportState, setExportState] = useState<'idle' | 'exporting'>('idle')
-  const [autoPreview, setAutoPreview] = useState(true)
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [sidebarWidth, setSidebarWidth] = useState(240)
   const [editorWidth, setEditorWidth] = useState(520)
   const [previewWidth, setPreviewWidth] = useState(520)
   const [zoom, setZoom] = useState(1)
-  const [renamingId, setRenamingId] = useState<string | null>(null)
-  const [renameDraft, setRenameDraft] = useState('')
-  const [workspaceRevision, setWorkspaceRevision] = useState(0)
-  const [undoIntent, setUndoIntent] = useState<
-    ReturnType<typeof createDeleteIntent> | null
-  >(null)
-  const [previewScrollTarget, setPreviewScrollTarget] = useState<{
-    pageIndex: number
-    nonce: number
-  } | null>(null)
 
-  const suppressSaveRef = useRef(false)
-  const renderVersionRef = useRef(createRenderVersionGate())
-  const workspaceRef = useRef<HTMLDivElement | null>(null)
-  const renderTimerRef = useRef<number | null>(null)
-  const renderInProgressRef = useRef(false)
-  const pendingRenderRef = useRef(false)
-  const renderRetryCountRef = useRef(0)
-  const latestContentRef = useRef('')
-  const latestFilesRef = useRef(files)
-  const appShortcutRef = useRef<(action: AppShortcutAction) => void>(() => {})
-  const latestActiveFileIdRef = useRef(activeFileId)
-  const latestActiveFileNameRef = useRef<string | undefined>(undefined)
-  const cursorLookupRef = useRef(0)
-  const cursorThrottleRef = useRef<CursorLookupThrottle | null>(null)
-  if (cursorThrottleRef.current === null) {
-    cursorThrottleRef.current = new CursorLookupThrottle()
+  // Populated below, during render, once both hooks have produced their APIs.
+  // Every consumer runs from effects/handlers, never during render.
+  const pipelineBridgeRef = useRef<FileLibraryPipelineBridge | null>(null)
+
+  const library = useFileLibrary({ pipelineBridge: pipelineBridgeRef })
+
+  const pipeline = usePreviewPipeline({
+    activeFile: library.activeFile,
+    activeFileId: library.activeFileId,
+    activeContent: library.activeContent,
+    latestContentRef: library.latestContentRef,
+    latestFilesRef: library.latestFilesRef,
+    latestActiveFileIdRef: library.latestActiveFileIdRef,
+  })
+  const {
+    previewDocument,
+    previewState,
+    previewError,
+    diagnostics,
+    exportState,
+    autoPreview,
+    setAutoPreview,
+    previewScrollTarget,
+    queueRender,
+    handleCursorClick,
+    handleExportSvg,
+  } = pipeline
+
+  // Wire the file-library bridge to the preview pipeline. Assigned every
+  // render so closures stay fresh (same pattern as appShortcutRef below).
+  pipelineBridgeRef.current = {
+    beginSourceSwitch: pipeline.beginSourceSwitch,
+    reportInvalidPath: pipeline.reportInvalidPath,
+    bumpWorkspaceRevision: pipeline.bumpWorkspaceRevision,
   }
-  latestFilesRef.current = files
-  latestActiveFileIdRef.current = activeFileId
 
-
-  const activeFile = useMemo(
-    () => files.find((file) => file.id === activeFileId) ?? null,
-    [files, activeFileId],
-  )
-  latestActiveFileNameRef.current = activeFile?.name
-  const activeVirtualPath = useMemo(() => {
-    if (!activeFile) {
-      return ''
-    }
-    try {
-      return toTypstVirtualPath(activeFile.name)
-    } catch {
-      return ''
-    }
-  }, [activeFile])
-
-  useEffect(() => {
-    let isMounted = true
-
-    const loadFiles = async () => {
-      const stored = await listFiles()
-      if (!isMounted) {
-        return
-      }
-
-      if (stored.length === 0) {
-        const initial: StoredFile = {
-          id: createId(),
-          name: 'Welcome.typ',
-          content: DEFAULT_CONTENT,
-          updatedAt: Date.now(),
-        }
-        await saveFile(initial)
-        if (!isMounted) {
-          return
-        }
-        setFiles([initial])
-        openFile(initial)
-        return
-      }
-
-      const sorted = sortFiles(stored)
-      setFiles(sorted)
-      openFile(sorted[0])
-    }
-
-    loadFiles()
-
-    return () => {
-      isMounted = false
-    }
-  }, [])
-
-  useEffect(() => {
-    return () => disposeTypstWorker()
-  }, [])
-
-  useEffect(() => {
-    if (!undoIntent) {
-      return
-    }
-
-    const handle = window.setTimeout(() => {
-      setUndoIntent(null)
-    }, UNDO_WINDOW_MS)
-
-    return () => window.clearTimeout(handle)
-  }, [undoIntent])
+  const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const appShortcutRef = useRef<(action: AppShortcutAction) => void>(() => {})
 
   useEffect(() => {
     const workspace = workspaceRef.current
@@ -209,462 +82,16 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSidebarOpen])
 
-  useEffect(() => {
-    if (!activeFileId) {
-      return
-    }
-
-    if (suppressSaveRef.current) {
-      suppressSaveRef.current = false
-      return
-    }
-
-    const handle = window.setTimeout(async () => {
-      const next = buildSavePayload({
-        activeFileId: latestActiveFileIdRef.current,
-        latestName: latestActiveFileNameRef.current,
-        latestContentRef,
-      })
-      if (!next) {
-        return
-      }
-      setSaveState('saving')
-      await saveFile(next)
-      setFiles((prev) => {
-        const updated = prev.filter((file) => file.id !== next.id)
-        return sortFiles([...updated, next])
-      })
-      setSaveState('saved')
-    }, 500)
-
-    return () => window.clearTimeout(handle)
-  }, [activeContent, activeFileId, activeFile?.name])
-
-  const queueRender = (immediate: boolean) => {
-    latestContentRef.current = activeContent
-
-    if (renderTimerRef.current) {
-      window.clearTimeout(renderTimerRef.current)
-      renderTimerRef.current = null
-    }
-
-    if (!activeContent || !activeFileId) {
-      setPreviewDocument(null)
-      setPreviewState('idle')
-      setPreviewError(null)
-      setDiagnostics([])
-      return
-    }
-
-    const scheduleRender = () => {
-      const run = async () => {
-        if (renderInProgressRef.current) {
-          pendingRenderRef.current = true
-          return
-        }
-
-        renderInProgressRef.current = true
-        pendingRenderRef.current = false
-        setPreviewState('rendering')
-        const renderVersion = renderVersionRef.current.begin()
-        const content = latestContentRef.current
-        const currentActiveFileId = latestActiveFileIdRef.current
-
-        try {
-          if (!currentActiveFileId || !content) {
-            setPreviewDocument(null)
-            setPreviewState('idle')
-            return
-          }
-          const workspace = buildTypstWorkspace(
-            latestFilesRef.current,
-            currentActiveFileId,
-            content,
-          )
-          const compileStartedAt = performance.now()
-          const result = await compileTypstWorkspace(workspace)
-          if (!renderVersionRef.current.isCurrent(renderVersion)) {
-            return
-          }
-
-          recordCompileDuration(performance.now() - compileStartedAt)
-
-          renderRetryCountRef.current = 0
-          setDiagnostics(result.diagnostics)
-          setPreviewError(null)
-          if (result.documentId && result.pages.length > 0) {
-            setPreviewDocument({ id: result.documentId, pages: result.pages })
-            setPreviewState('idle')
-          } else {
-            setPreviewState('error')
-          }
-        } catch (error) {
-          if (!renderVersionRef.current.isCurrent(renderVersion)) {
-            return
-          }
-          // A dead worker rejects every request; retry once on a fresh worker.
-          if (
-            renderRetryCountRef.current < 1 &&
-            typeof error === 'object' &&
-            error !== null &&
-            'message' in error &&
-            String((error as Error).message).includes('worker')
-          ) {
-            renderRetryCountRef.current += 1
-            retryAfterFatalError()
-            scheduleRender()
-            return
-          }
-          renderRetryCountRef.current = 0
-          setDiagnostics([])
-          setPreviewState('error')
-          setPreviewError(
-            error instanceof Error && error.message
-              ? error.message
-              : 'Typst preview failed unexpectedly',
-          )
-        } finally {
-          renderInProgressRef.current = false
-          if (pendingRenderRef.current) {
-            pendingRenderRef.current = false
-            scheduleRender()
-          }
-        }
-      }
-
-      void run()
-    }
-
-    if (immediate) {
-      scheduleRender()
-      return
-    }
-
-    const { delayMs } = getPreviewPolicy(activeContent.length)
-    renderTimerRef.current = window.setTimeout(scheduleRender, delayMs)
-  }
-
-  useEffect(() => {
-    if (!autoPreview || !getPreviewPolicy(activeContent.length).auto) {
-      return
-    }
-
-    queueRender(false)
-
-    return () => {
-      if (renderTimerRef.current) {
-        window.clearTimeout(renderTimerRef.current)
-      }
-    }
-    // queueRender closes over activeContent/activeFileId, which are already
-    // listed; the function identity changes every render by design.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeContent, activeFileId, autoPreview, workspaceRevision])
-
-  useEffect(() => {
-    if (autoPreview && !getPreviewPolicy(activeContent.length).auto) {
-      setAutoPreview(false)
-    }
-  }, [activeContent, autoPreview])
-
-  const openFile = (file: StoredFile) => {
-    cursorLookupRef.current += 1
-    setPreviewScrollTarget(null)
-    synchronizeRenderTransition({
-      gate: renderVersionRef.current,
-      source: file.content,
-      latestSource: latestContentRef,
-      pending: pendingRenderRef,
-      timer: renderTimerRef,
-      clearTimer: window.clearTimeout,
-      settlePreview: () => {
-        setPreviewDocument(null)
-        setDiagnostics([])
-        setPreviewState('idle')
-        setPreviewError(null)
-      },
-    })
-    suppressSaveRef.current = true
-    setActiveFileId(file.id)
-    setActiveContent(file.content)
-    setSaveState('saved')
-    setRenamingId(null)
-    setRenameDraft('')
-  }
-
-  const createFile = async () => {
-    const baseName = 'Untitled'
-    const existingNames = new Set(files.map((file) => file.name))
-    let index = 1
-    let name = `${baseName}.typ`
-    while (existingNames.has(name)) {
-      name = `${baseName} ${index}.typ`
-      index += 1
-    }
-
-    const next: StoredFile = {
-      id: createId(),
-      name,
-      content: DEFAULT_CONTENT,
-      updatedAt: Date.now(),
-    }
-
-    await saveFile(next)
-    setFiles((prev) => sortFiles([...prev, next]))
-    openFile(next)
-  }
-
-  const handleImportFile = async () => {
-    const opened = await openTypstFile()
-    if (!opened) {
-      return
-    }
-
-    const existingNames = new Set(latestFilesRef.current.map((file) => file.name))
-    let name = opened.name
-    let index = 1
-    while (existingNames.has(name)) {
-      const dotIndex = opened.name.lastIndexOf('.')
-      const stem = dotIndex > 0 ? opened.name.slice(0, dotIndex) : opened.name
-      const ext = dotIndex > 0 ? opened.name.slice(dotIndex) : ''
-      name = `${stem} ${index}${ext}`
-      index += 1
-    }
-
-    try {
-      toTypstVirtualPath(name)
-    } catch {
-      // The picked file does not map to a valid Typst virtual path; skip it.
-      return
-    }
-
-    const next: StoredFile = {
-      id: createId(),
-      name,
-      content: opened.content,
-      updatedAt: Date.now(),
-    }
-
-    await saveFile(next)
-    setFiles((prev) => sortFiles([...prev, next]))
-    openFile(next)
-  }
-
-  const handleExportFile = async () => {
-    if (!activeFile) {
-      return
-    }
-    await saveTypstFile(activeFile.name, activeContent)
-  }
-
-  const handleExportSvg = async () => {
-    if (!previewDocument) {
-      return
-    }
-    setExportState('exporting')
-    try {
-      const baseName = activeFile
-        ? activeFile.name.replace(/\.typ$/i, '')
-        : 'document'
-      await exportCurrentDocument(previewDocument.id, baseName)
-    } finally {
-      setExportState('idle')
-    }
-  }
-
-  const handleRename = async () => {
-    if (!renamingId) {
-      return
-    }
-
-    const trimmed = renameDraft.trim()
-    if (!trimmed) {
-      setRenamingId(null)
-      setRenameDraft('')
-      return
-    }
-
-    const target = files.find((file) => file.id === renamingId)
-    if (!target || target.name === trimmed) {
-      setRenamingId(null)
-      setRenameDraft('')
-      return
-    }
-
-    try {
-      const nextPath = toTypstVirtualPath(trimmed)
-      const duplicate = files.some(
-        (file) => file.id !== target.id && toTypstVirtualPath(file.name) === nextPath,
-      )
-      if (duplicate) {
-        throw new Error(`Another file already uses ${trimmed}`)
-      }
-    } catch (error) {
-      setPreviewState('error')
-      setPreviewError(error instanceof Error ? error.message : 'Invalid Typst file path')
-      return
-    }
-
-    const updated = { ...target, name: trimmed, updatedAt: Date.now() }
-    await saveFile(updated)
-    setFiles((prev) =>
-      sortFiles(prev.map((file) => (file.id === updated.id ? updated : file))),
-    )
-    setWorkspaceRevision((revision) => revision + 1)
-    setRenamingId(null)
-    setRenameDraft('')
-  }
-
-  const handleDelete = async (file: StoredFile) => {
-    // Capture the intent BEFORE deleting so Undo can restore this exact file.
-    // Replacing a pending intent permanently deletes the previously deleted
-    // file — only the most recent delete is undoable.
-    setUndoIntent(createDeleteIntent(file))
-
-    await deleteFile(file.id)
-    setFiles((prev) => prev.filter((item) => item.id !== file.id))
-    setWorkspaceRevision((revision) => revision + 1)
-
-    if (file.id === activeFileId) {
-      const remaining = files.filter((item) => item.id !== file.id)
-      if (remaining.length > 0) {
-        openFile(sortFiles(remaining)[0])
-      } else {
-        cursorLookupRef.current += 1
-        setPreviewScrollTarget(null)
-        synchronizeRenderTransition({
-          gate: renderVersionRef.current,
-          source: '',
-          latestSource: latestContentRef,
-          pending: pendingRenderRef,
-          timer: renderTimerRef,
-          clearTimer: window.clearTimeout,
-          settlePreview: () => {
-            setPreviewDocument(null)
-            setDiagnostics([])
-            setPreviewState('idle')
-            setPreviewError(null)
-          },
-        })
-        setActiveFileId(null)
-        setActiveContent('')
-      }
-    }
-  }
-
-  const handleUndoDelete = async () => {
-    if (!undoIntent) {
-      return
-    }
-
-    const { file } = undoIntent
-    setUndoIntent(null)
-    // saveFile upserts (idb put), so re-inserting restores the file.
-    await saveFile(file)
-    setFiles((prev) =>
-      sortFiles([...prev.filter((item) => item.id !== file.id), file]),
-    )
-    if (!latestActiveFileIdRef.current) {
-      openFile(file)
-    }
-  }
-
   const saveLabel =
-    saveState === 'saving'
+    library.saveState === 'saving'
       ? 'Saving...'
-      : saveState === 'dirty'
+      : library.saveState === 'dirty'
         ? 'Unsaved changes'
         : 'All changes saved'
 
   const handleEditorChange = (value: string) => {
-    cursorLookupRef.current += 1
-    synchronizeRenderTransition({
-      gate: renderVersionRef.current,
-      source: value,
-      latestSource: latestContentRef,
-      pending: pendingRenderRef,
-      timer: renderTimerRef,
-      clearTimer: window.clearTimeout,
-      settlePreview: () => {
-        setDiagnostics([])
-        setPreviewState(
-          value && autoPreview && getPreviewPolicy(value.length).auto
-            ? 'rendering'
-            : 'idle',
-        )
-        setPreviewError(null)
-      },
-    })
-    setActiveContent(value)
-    if (saveState !== 'dirty') {
-      setSaveState('dirty')
-    }
-  }
-
-  const handleCursorClick = async (offset: number) => {
-    const currentActiveFileId = latestActiveFileIdRef.current
-    const content = latestContentRef.current
-    if (!currentActiveFileId || !content || !previewDocument) {
-      return
-    }
-    const cursorThrottle = cursorThrottleRef.current
-    if (!cursorThrottle) {
-      return
-    }
-    const cacheKey = `${content.length}:${offset}`
-    const cachedPageIndex = cursorThrottle.cached(cacheKey)
-    if (cachedPageIndex !== undefined) {
-      if (
-        cachedPageIndex < 0 ||
-        cachedPageIndex >= previewDocument.pages.length
-      ) {
-        return
-      }
-      const cachedRequestId = ++cursorLookupRef.current
-      setPreviewScrollTarget({
-        pageIndex: cachedPageIndex,
-        nonce: cachedRequestId,
-      })
-      return
-    }
-    if (!cursorThrottle.request(cacheKey)) {
-      return
-    }
-    const requestId = ++cursorLookupRef.current
-    const workspace = buildTypstWorkspace(
-      latestFilesRef.current,
-      currentActiveFileId,
-      content,
-    )
-    try {
-      const result = await locateTypstCursor(workspace, offset)
-      if (
-        requestId !== cursorLookupRef.current ||
-        currentActiveFileId !== latestActiveFileIdRef.current ||
-        result.pageIndex < 0 ||
-        result.pageIndex >= previewDocument.pages.length
-      ) {
-        return
-      }
-      cursorThrottle.remember(cacheKey, result.pageIndex)
-      setPreviewScrollTarget({ pageIndex: result.pageIndex, nonce: requestId })
-    } catch {
-      // A marker cannot be inserted safely at every Typst code position.
-      // Leave the current preview position unchanged when lookup fails.
-    }
-  }
-
-  const openDiagnosticFile = (diagnostic: TypstDiagnostic) => {
-    const file = files.find((candidate) => {
-      try {
-        return toTypstVirtualPath(candidate.name) === diagnostic.path
-      } catch {
-        return false
-      }
-    })
-    if (file && file.id !== activeFileId) {
-      openFile(file)
-    }
+    pipeline.notifySourceEdit(value)
+    library.changeActiveContent(value)
   }
 
   const previewLabel =
@@ -707,7 +134,7 @@ function App() {
         handleRenderOnce()
         break
       case 'new-file':
-        void createFile()
+        void library.createFile()
         break
       case 'toggle-sidebar':
         setIsSidebarOpen((prev) => !prev)
@@ -836,12 +263,12 @@ function App() {
           <div className="sidebar-header">
             <div>
               <h2>Files</h2>
-              <span className="file-count">{files.length}</span>
+              <span className="file-count">{library.files.length}</span>
             </div>
             <div className="sidebar-actions">
               <button
                 className="icon-button"
-                onClick={createFile}
+                onClick={library.createFile}
                 type="button"
                 aria-label="New file"
                 title="New file"
@@ -857,16 +284,16 @@ function App() {
               </button>
               <button
                 className="ghost"
-                onClick={handleImportFile}
+                onClick={library.handleImportFile}
                 type="button"
               >
                 Import
               </button>
               <button
                 className="ghost"
-                onClick={handleExportFile}
+                onClick={library.handleExportFile}
                 type="button"
-                disabled={!activeFile}
+                disabled={!library.activeFile}
               >
                 Export
               </button>
@@ -888,26 +315,25 @@ function App() {
             </div>
           </div>
           <div className="file-list">
-            {files.map((file) => (
+            {library.files.map((file) => (
               <div
                 key={file.id}
                 className={`file-item ${
-                  file.id === activeFileId ? 'active' : ''
+                  file.id === library.activeFileId ? 'active' : ''
                 }`}
               >
-                {renamingId === file.id ? (
+                {library.renamingId === file.id ? (
                   <input
                     className="file-rename"
-                    value={renameDraft}
-                    onChange={(event) => setRenameDraft(event.target.value)}
-                    onBlur={handleRename}
+                    value={library.renameDraft}
+                    onChange={(event) => library.setRenameDraft(event.target.value)}
+                    onBlur={library.handleRename}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') {
-                        handleRename()
+                        library.handleRename()
                       }
                       if (event.key === 'Escape') {
-                        setRenamingId(null)
-                        setRenameDraft('')
+                        library.cancelRename()
                       }
                     }}
                     autoFocus
@@ -916,7 +342,7 @@ function App() {
                   <button
                     className="file-name"
                     type="button"
-                    onClick={() => openFile(file)}
+                    onClick={() => library.openFile(file)}
                   >
                     {file.name}
                   </button>
@@ -924,17 +350,14 @@ function App() {
                 <div className="file-actions">
                   <button
                     type="button"
-                    onClick={() => {
-                      setRenamingId(file.id)
-                      setRenameDraft(file.name)
-                    }}
+                    onClick={() => library.startRename(file)}
                     aria-label={`Rename ${file.name}`}
                   >
                     Rename
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleDelete(file)}
+                    onClick={() => library.handleDelete(file)}
                     aria-label={`Delete ${file.name}`}
                   >
                     Delete
@@ -975,16 +398,16 @@ function App() {
                 {isSidebarOpen ? 'Hide files' : 'Show files'}
               </button>
               <h2>Editor</h2>
-              <span>{activeFile?.name ?? 'No file selected'}</span>
+              <span>{library.activeFile?.name ?? 'No file selected'}</span>
             </div>
             <span className="pane-status">{saveLabel}</span>
           </div>
           <div className="pane-body">
-            {activeFile ? (
+            {library.activeFile ? (
               <div className="editor-stack">
                 <TypstEditor
-                  value={activeContent}
-                  path={activeVirtualPath}
+                  value={library.activeContent}
+                  path={library.activeVirtualPath}
                   diagnostics={diagnostics}
                   onChange={handleEditorChange}
                   onCursorClick={handleCursorClick}
@@ -1000,13 +423,13 @@ function App() {
                         const location = diagnostic.range
                           ? `${diagnostic.range.start.line + 1}:${diagnostic.range.start.column + 1}`
                           : ''
-                        const path = diagnostic.path.replace(/^\/@memory\//, '') || activeFile.name
+                        const path = diagnostic.path.replace(/^\/@memory\//, '') || library.activeFile!.name
                         return (
                           <button
                             className={`error-item ${diagnostic.severity}`}
                             key={`${diagnostic.path}-${diagnostic.rawRange}-${index}`}
                             type="button"
-                            onClick={() => openDiagnosticFile(diagnostic)}
+                            onClick={() => library.openDiagnosticFile(diagnostic)}
                           >
                             <span className="error-severity">{diagnostic.severity}</span>
                             <span className="error-message">{diagnostic.message}</span>
@@ -1132,10 +555,10 @@ function App() {
           </div>
         </section>
       </div>
-      {undoIntent ? (
+      {library.undoIntent ? (
         <div className="snackbar" role="status">
-          <span>Deleted {undoIntent.file.name}</span>
-          <button className="ghost" type="button" onClick={handleUndoDelete}>
+          <span>Deleted {library.undoIntent.file.name}</span>
+          <button className="ghost" type="button" onClick={library.handleUndoDelete}>
             Undo
           </button>
         </div>
