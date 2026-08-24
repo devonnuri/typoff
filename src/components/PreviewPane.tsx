@@ -6,8 +6,6 @@ import type {
 
 interface PreviewPaneProps {
   previewLabel: string
-  autoPreview: boolean
-  onToggleAutoPreview: () => void
   onRenderOnce: () => void
   zoom: number
   onZoomIn: () => void
@@ -24,8 +22,6 @@ interface PreviewPaneProps {
 
 export function PreviewPane({
   previewLabel,
-  autoPreview,
-  onToggleAutoPreview,
   onRenderOnce,
   zoom,
   onZoomIn,
@@ -45,13 +41,6 @@ export function PreviewPane({
           <span>{previewLabel}</span>
         </div>
         <div className="pane-actions">
-          <button
-            className="ghost"
-            type="button"
-            onClick={onToggleAutoPreview}
-          >
-            {autoPreview ? 'Auto' : 'Manual'}
-          </button>
           <button className="ghost" type="button" onClick={onRenderOnce}>
             Render
           </button>

@@ -43,8 +43,6 @@ function App() {
     previewError,
     diagnostics,
     exportState,
-    autoPreview,
-    setAutoPreview,
     previewScrollTarget,
     cursorTarget,
     queueRender,
@@ -372,8 +370,6 @@ function App() {
 
         <PreviewPane
           previewLabel={previewLabel}
-          autoPreview={autoPreview}
-          onToggleAutoPreview={() => setAutoPreview((prev) => !prev)}
           onRenderOnce={handleRenderOnce}
           zoom={zoom}
           onZoomIn={handleZoomIn}

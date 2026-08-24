@@ -53,7 +53,6 @@ export function usePreviewPipeline({
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [diagnostics, setDiagnostics] = useState<TypstDiagnostic[]>([])
   const [exportState, setExportState] = useState<ExportState>('idle')
-  const [autoPreview, setAutoPreview] = useState(true)
   const [workspaceRevision, setWorkspaceRevision] = useState(0)
   const [previewScrollTarget, setPreviewScrollTarget] = useState<{
     pageIndex: number
@@ -184,10 +183,6 @@ export function usePreviewPipeline({
   }
 
   useEffect(() => {
-    if (!autoPreview || !getPreviewPolicy(activeContent.length).auto) {
-      return
-    }
-
     queueRender(false)
 
     return () => {
@@ -198,13 +193,7 @@ export function usePreviewPipeline({
     // queueRender closes over activeContent/activeFileId, which are already
     // listed; the function identity changes every render by design.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeContent, activeFileId, autoPreview, workspaceRevision])
-
-  useEffect(() => {
-    if (autoPreview && !getPreviewPolicy(activeContent.length).auto) {
-      setAutoPreview(false)
-    }
-  }, [activeContent, autoPreview])
+  }, [activeContent, activeFileId, workspaceRevision])
 
   // Called when the editor switches to a different source wholesale (opening
   // a file, or deleting the last file): resets scroll state and settles the
@@ -242,7 +231,7 @@ export function usePreviewPipeline({
       settlePreview: () => {
         setDiagnostics([])
         setPreviewState(
-          value && autoPreview && getPreviewPolicy(value.length).auto
+          value
             ? 'rendering'
             : 'idle',
         )
@@ -360,8 +349,6 @@ export function usePreviewPipeline({
     previewError,
     diagnostics,
     exportState,
-    autoPreview,
-    setAutoPreview,
     workspaceRevision,
     previewScrollTarget,
     cursorTarget,
