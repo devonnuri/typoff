@@ -140,7 +140,7 @@ describe('RenderSessionCache', () => {
 })
 
 describe('renderDocumentPage', () => {
-  it('renders repeated pages of one document without re-injecting the artifact', async () => {
+  it('renders repeated pages of one document, re-seeding the artifact each time', async () => {
     const fake = createFakeRenderer()
     const cache = new RenderSessionCache()
     await cache.acquire(fake.renderer, 'doc-1', ARTIFACT_A)
@@ -163,11 +163,23 @@ describe('renderDocumentPage', () => {
       PAGE,
     )
 
-    // Both renders hit the same long-lived session with no artifact reset.
+    // Both renders hit the same long-lived session; the artifact is
+    // re-injected (reset) before every render because renderSvgDiff is
+    // stateful and later windows can come back empty without a re-seed.
     expect(fake.diffCalls).toHaveLength(2)
     expect(fake.diffCalls[0].session).toBe(fake.diffCalls[1].session)
     expect(fake.diffCalls[0].session.marker).toBe('module-1-1')
-    expect(fake.manipulateCalls).toHaveLength(0)
+    expect(fake.manipulateCalls).toHaveLength(2)
+    expect(fake.manipulateCalls[0]).toEqual({
+      session: fake.createdSessions[0],
+      action: 'reset',
+      data: ARTIFACT_A,
+    })
+    expect(fake.manipulateCalls[1]).toEqual({
+      session: fake.createdSessions[0],
+      action: 'reset',
+      data: ARTIFACT_A,
+    })
     expect(fake.runWithSessionCount()).toBe(0)
     // Post-processing unchanged: foreign objects stripped, page isolated/cropped.
     for (const svg of [first, second]) {
@@ -195,7 +207,9 @@ describe('renderDocumentPage', () => {
     expect(svg).toContain('data-session="throwaway-1"')
     expect(svg).not.toContain('<foreignObject')
     expect(fake.runWithSessionCount()).toBe(1)
+    // One failed reset on the cached session, then the throwaway reset.
     expect(fake.manipulateCalls).toEqual([
+      { session: fake.createdSessions[0], action: 'reset', data: ARTIFACT_A },
       { session: fake.createdSessions[1], action: 'reset', data: ARTIFACT_A },
     ])
     // The poisoned slot is dropped so the next compile rebuilds a real module.
@@ -245,7 +259,7 @@ describe('renderDocumentPage', () => {
       PAGE,
     )
 
-    expect(fake.manipulateCalls).toHaveLength(1) // only the doc switch reset
+    expect(fake.manipulateCalls).toHaveLength(3) // per-render re-seed + doc switch
     expect(fake.getModuleCount()).toBe(1) // no new module for the second document
     expect(fake.diffCalls[0].session.marker).toBe('module-1-1')
     expect(fake.diffCalls[1].session.marker).toBe('module-1-1')

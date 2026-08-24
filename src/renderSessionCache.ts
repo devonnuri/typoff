@@ -110,10 +110,12 @@ function pageRenderWindow(page: TypstPageInfo): SvgRenderWindow {
 /**
  * Renders one page of an already-compiled document.
  *
- * Fast path: the cache still holds a session for this document, so the SVG is
- * rendered directly without re-injecting the artifact. If that render fails,
- * the cache is invalidated and the page is rebuilt once in a throwaway
- * session (artifact reset + render), matching the pre-cache behavior.
+ * The renderer's `render_svg_diff` is stateful: once a windowed diff is
+ * produced, later calls on the same session can come back empty until the
+ * artifact is re-injected. So every page render starts by resetting the
+ * session's data to the artifact (`action: 'reset'`, cheap on a warm slot),
+ * then renders. If that fails on a cached session, the cache is invalidated
+ * and the page is rebuilt once in a throwaway session.
  */
 export async function renderDocumentPage(
   renderer: TypstRendererLike,
@@ -127,6 +129,11 @@ export async function renderDocumentPage(
   const cachedSession = cache.get(documentId)
   if (cachedSession) {
     try {
+      await renderer.manipulateData({
+        renderSession: cachedSession,
+        action: 'reset',
+        data: artifact,
+      })
       return finalizePageSvg(
         renderer.renderSvgDiff({ renderSession: cachedSession, window: renderWindow }),
         pageIndex,
