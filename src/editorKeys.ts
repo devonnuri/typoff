@@ -8,6 +8,7 @@ import {
   EMPH_MARKER,
   STRONG_MARKER,
 } from './formatCommands'
+import { toggleLineComment } from './commentCommand'
 
 // Typst convention: indent with two spaces.
 export function createEditorKeymapExtensions() {
@@ -24,8 +25,32 @@ export function createEditorKeymapExtensions() {
         key: 'Mod-i',
         run: (view) => applyFormat(view, EMPH_MARKER),
       },
+      {
+        key: 'Mod-/',
+        run: applyCommentToggle,
+      },
     ]),
   ]
+}
+
+function applyCommentToggle(
+  view: import('@codemirror/view').EditorView,
+): boolean {
+  const { state } = view
+  const range = state.selection.main
+  const result = toggleLineComment({
+    text: state.doc.toString(),
+    from: range.from,
+    to: range.to,
+  })
+  if (result.text === state.doc.toString()) {
+    return false
+  }
+  view.dispatch({
+    changes: { from: 0, to: state.doc.length, insert: result.text },
+    selection: EditorSelection.range(result.from, result.to),
+  })
+  return true
 }
 
 function applyFormat(
