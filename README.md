@@ -2,6 +2,18 @@
 
 A local-first Typst editor that installs as an offline PWA.
 
+## Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `Cmd/Ctrl+B` | Bold — wrap selection in `*…*` (toggle off if wrapped) |
+| `Cmd/Ctrl+I` | Italic — wrap selection in `_…_` (toggle off if wrapped) |
+| `Cmd/Ctrl+/` | Toggle line comments (`//`) on the touched lines |
+| `$` | Opens math mode and auto-inserts the closing `$` |
+| `Cmd/Ctrl+S` | Render now |
+| `Cmd/Ctrl+N` | New file |
+| `Cmd/Ctrl+=` / `Cmd/Ctrl+-` / `Cmd/Ctrl+0` | Zoom in / out / reset |
+
 ## Development
 
 ```bash
