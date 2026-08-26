@@ -9,6 +9,7 @@ import {
   STRONG_MARKER,
 } from './formatCommands'
 import { toggleLineComment } from './commentCommand'
+import { shouldAutoCloseMath } from './mathAutoclose'
 
 // Typst convention: indent with two spaces.
 export function createEditorKeymapExtensions() {
@@ -29,8 +30,31 @@ export function createEditorKeymapExtensions() {
         key: 'Mod-/',
         run: applyCommentToggle,
       },
+      {
+        key: '$',
+        run: autoCloseMath,
+      },
     ]),
   ]
+}
+
+function autoCloseMath(view: import('@codemirror/view').EditorView): boolean {
+  const { state } = view
+  const range = state.selection.main
+  if (!range.empty) {
+    return false // let the default handler wrap/insert normally
+  }
+  const pos = range.head
+  const before = state.doc.sliceString(0, pos)
+  const after = state.doc.sliceString(pos)
+  if (!shouldAutoCloseMath({ before, after })) {
+    return false
+  }
+  view.dispatch({
+    changes: { from: pos, insert: '$$' },
+    selection: EditorSelection.cursor(pos + 1),
+  })
+  return true
 }
 
 function applyCommentToggle(
