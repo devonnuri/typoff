@@ -211,5 +211,16 @@ export function createPageLruCache(
       byteSizes.clear()
       total = 0
     },
+    /**
+     * Drops all cached entries WITHOUT revoking their blob URLs so images
+     * currently displayed from them stay intact. Used when a recompile
+     * produces a new documentId: the old pages remain visible until each
+     * freshly rendered replacement arrives.
+     */
+    detach() {
+      entries.clear()
+      byteSizes.clear()
+      total = 0
+    },
   }
 }

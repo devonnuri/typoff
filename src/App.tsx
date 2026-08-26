@@ -377,6 +377,7 @@ function App() {
           onZoomReset={handleZoomReset}
           previewState={previewState}
           previewError={previewError}
+          lastPreviewError={pipeline.lastPreviewError}
           previewDocument={previewDocument}
           previewScrollTarget={previewScrollTarget}
           onPageClick={(pageIndex, yPt) => void handleSourceJump(pageIndex, yPt)}
