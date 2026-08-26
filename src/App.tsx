@@ -137,9 +137,6 @@ function App() {
       case 'new-file':
         void library.createFile()
         break
-      case 'toggle-sidebar':
-        setIsSidebarOpen((prev) => !prev)
-        break
       case 'zoom-in':
         handleZoomIn()
         break

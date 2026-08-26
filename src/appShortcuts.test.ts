@@ -35,10 +35,10 @@ describe('mapShortcutToAction', () => {
     expect(mapShortcutToAction(withMeta('N'))).toBe('new-file')
   })
 
-  it('maps Ctrl+B and Cmd+B to toggle-sidebar', () => {
-    expect(mapShortcutToAction(withCtrl('b'))).toBe('toggle-sidebar')
-    expect(mapShortcutToAction(withMeta('b'))).toBe('toggle-sidebar')
-    expect(mapShortcutToAction(withCtrl('B'))).toBe('toggle-sidebar')
+  it('no longer maps Cmd+B: it is reserved for editor bold', () => {
+    expect(mapShortcutToAction(withCtrl('b'))).toBeNull()
+    expect(mapShortcutToAction(withMeta('b'))).toBeNull()
+    expect(mapShortcutToAction(withCtrl('B'))).toBeNull()
   })
 
   it('maps Ctrl+= / Ctrl++ and Cmd equivalents to zoom-in', () => {
