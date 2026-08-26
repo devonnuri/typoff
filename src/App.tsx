@@ -137,9 +137,6 @@ function App() {
       case 'new-file':
         void library.createFile()
         break
-      case 'toggle-sidebar':
-        setIsSidebarOpen((prev) => !prev)
-        break
       case 'zoom-in':
         handleZoomIn()
         break
@@ -377,6 +374,7 @@ function App() {
           onZoomReset={handleZoomReset}
           previewState={previewState}
           previewError={previewError}
+          lastPreviewError={pipeline.lastPreviewError}
           previewDocument={previewDocument}
           previewScrollTarget={previewScrollTarget}
           onPageClick={(pageIndex, yPt) => void handleSourceJump(pageIndex, yPt)}

@@ -421,6 +421,14 @@
   font-family: inherit;
 }
 
+.preview-stale-strip {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.75rem;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.08);
+  border-bottom: 1px solid rgba(251, 191, 36, 0.35);
+}
+
 .empty-state {
   height: 100%;
   display: grid;

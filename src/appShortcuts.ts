@@ -3,7 +3,6 @@
 export type AppShortcutAction =
   | 'render'
   | 'new-file'
-  | 'toggle-sidebar'
   | 'zoom-in'
   | 'zoom-out'
   | 'reset-zoom'
@@ -17,7 +16,6 @@ export interface AppShortcutEvent {
 const SHORTCUT_KEYS: Record<string, AppShortcutAction> = {
   s: 'render',
   n: 'new-file',
-  b: 'toggle-sidebar',
   '=': 'zoom-in',
   '+': 'zoom-in',
   '-': 'zoom-out',

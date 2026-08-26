@@ -13,6 +13,11 @@ interface PreviewPaneProps {
   onZoomReset: () => void
   previewState: PreviewState
   previewError: string | null
+  /**
+   * Message explaining why the currently shown (buffered) pages are stale,
+   * shown as a thin strip while the previous render stays visible.
+   */
+  lastPreviewError?: string | null
   previewDocument: PreviewDocument | null
   /** Scroll target for VirtualPreview: `{ pageIndex, nonce }` or null. */
   previewScrollTarget: { pageIndex: number; nonce: number } | null
@@ -29,6 +34,7 @@ export function PreviewPane({
   onZoomReset,
   previewState,
   previewError,
+  lastPreviewError,
   previewDocument,
   previewScrollTarget,
   onPageClick,
@@ -88,6 +94,11 @@ export function PreviewPane({
         </div>
       </div>
       <div className="pane-body preview-body">
+        {lastPreviewError && previewDocument ? (
+          <div className="preview-stale-strip" role="status">
+            Showing the last successful render — {lastPreviewError}
+          </div>
+        ) : null}
         {previewState === 'error' && !previewDocument ? (
           <div className="preview-error">
             <p>{previewError ? 'Preview failed' : 'Typst found a problem'}</p>

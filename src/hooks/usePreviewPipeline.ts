@@ -51,6 +51,9 @@ export function usePreviewPipeline({
   const [previewDocument, setPreviewDocument] = useState<PreviewDocument | null>(null)
   const [previewState, setPreviewState] = useState<PreviewState>('idle')
   const [previewError, setPreviewError] = useState<string | null>(null)
+  // Last compile failure message, kept so the preview strip can show why the
+  // buffered (previous) pages are stale even after `previewError` clears.
+  const [lastPreviewError, setLastPreviewError] = useState<string | null>(null)
   const [diagnostics, setDiagnostics] = useState<TypstDiagnostic[]>([])
   const [exportState, setExportState] = useState<ExportState>('idle')
   const [workspaceRevision, setWorkspaceRevision] = useState(0)
@@ -134,6 +137,13 @@ export function usePreviewPipeline({
             setPreviewDocument({ id: result.documentId, pages: result.pages })
             setPreviewState('idle')
           } else {
+            // Keep the previous pages on screen (double buffering) and only
+            // surface the compile failure as a status + error strip.
+            setLastPreviewError(
+              result.diagnostics.some((d) => d.severity === 'error')
+                ? null
+                : 'The document compiled to zero pages',
+            )
             setPreviewState('error')
           }
         } catch (error) {
@@ -155,6 +165,10 @@ export function usePreviewPipeline({
           }
           renderRetryCountRef.current = 0
           setDiagnostics([])
+          // Keep the previous pages visible; record the error for the strip.
+          setLastPreviewError(
+            error instanceof Error && error.message ? error.message : null,
+          )
           setPreviewState('error')
           setPreviewError(
             error instanceof Error && error.message
@@ -347,6 +361,7 @@ export function usePreviewPipeline({
     previewDocument,
     previewState,
     previewError,
+    lastPreviewError,
     diagnostics,
     exportState,
     workspaceRevision,

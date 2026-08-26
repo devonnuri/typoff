@@ -50,10 +50,11 @@ export function VirtualPreview({
 
   useEffect(() => {
     documentIdRef.current = documentId
-    cacheRef.current.clear()
+    // New document: the old pages stay on screen (double buffering) but must
+    // not be served from cache again — detach cached URLs without revoking
+    // them so displayed <img> nodes survive until fresh renders replace src.
+    cacheRef.current.detach()
     inFlightRef.current.clear()
-    setUrls(new Map())
-    setErrors(new Map())
   }, [documentId])
 
   useEffect(() => {
@@ -82,12 +83,15 @@ export function VirtualPreview({
           return
         }
         const url = createSvgUrl(result.svg)
+        // The displayed URL may survive a cache detach (double buffering);
+        // revoke it only now that its fresh replacement is taking over.
         cacheRef.current.set(pageIndex, url, result.svg.length)
-        const retained = new Set(cacheRef.current.keys())
         setUrls((current) => {
-          const next = new Map(
-            [...current].filter(([index]) => retained.has(index)),
-          )
+          const staleUrl = current.get(pageIndex)
+          if (staleUrl && staleUrl !== url) {
+            URL.revokeObjectURL(staleUrl)
+          }
+          const next = new Map(current)
           next.set(pageIndex, url)
           return next
         })
