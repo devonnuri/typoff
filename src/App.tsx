@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import './App.css'
 import { mapShortcutToAction, type AppShortcutAction } from './appShortcuts'
 import { TypstEditor } from './TypstEditor'
@@ -10,6 +10,12 @@ import {
 } from './resizeLogic'
 import { FileSidebar } from './components/FileSidebar'
 import { PreviewPane } from './components/PreviewPane'
+import { Button } from './components/ui/button'
+import { Badge } from './components/ui/badge'
+import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs'
+import { Sheet, SheetContent, SheetTitle, SheetDescription } from './components/ui/sheet'
+import { PanelLeft, FileCode2 } from 'lucide-react'
+import { EditorView } from '@codemirror/view'
 import {
   useFileLibrary,
   type FileLibraryPipelineBridge,
@@ -18,13 +24,27 @@ import { usePreviewPipeline } from './hooks/usePreviewPipeline'
 
 function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
-  const [sidebarWidth, setSidebarWidth] = useState(240)
-  const [editorWidth, setEditorWidth] = useState(520)
-  const [previewWidth, setPreviewWidth] = useState(520)
+  const [requestedSidebarWidth, setSidebarWidth] = useState(240)
+  const [editorRatio, setEditorRatio] = useState(0.55)
+  const [workspaceWidth, setWorkspaceWidth] = useState(window.innerWidth)
+  const [activePane, setActivePane] = useState('editor')
+  const [isFilesSheetOpen, setIsFilesSheetOpen] = useState(false)
+  const isCompact = workspaceWidth <= 1100
+  const sidebarVisible = isSidebarOpen && !isCompact
+  const handles = sidebarVisible ? 16 : 8
+  const sidebarWidth = Math.min(
+    requestedSidebarWidth,
+    Math.max(MIN_SIDEBAR_WIDTH, workspaceWidth - handles - MIN_PANE_WIDTH * 2),
+  )
+  const remainingWidth = workspaceWidth - (sidebarVisible ? sidebarWidth : 0) - handles
+  const editorWidth = Math.min(
+    Math.max(MIN_PANE_WIDTH, remainingWidth * editorRatio),
+    remainingWidth - MIN_PANE_WIDTH,
+  )
+  const previewWidth = remainingWidth - editorWidth
   const [zoom, setZoom] = useState(1)
 
-  // Populated below, during render, once both hooks have produced their APIs.
-  // Every consumer runs from effects/handlers, never during render.
+  // Updated after each commit, before file-library effects or user handlers.
   const pipelineBridgeRef = useRef<FileLibraryPipelineBridge | null>(null)
 
   const library = useFileLibrary({ pipelineBridge: pipelineBridgeRef })
@@ -51,44 +71,37 @@ function App() {
     handleExportSvg,
   } = pipeline
 
-  // Wire the file-library bridge to the preview pipeline. Assigned every
-  // render so closures stay fresh (same pattern as appShortcutRef below).
-  pipelineBridgeRef.current = {
-    beginSourceSwitch: pipeline.beginSourceSwitch,
-    reportInvalidPath: pipeline.reportInvalidPath,
-    bumpWorkspaceRevision: pipeline.bumpWorkspaceRevision,
-  }
+  useLayoutEffect(() => {
+    pipelineBridgeRef.current = {
+      beginSourceSwitch: pipeline.beginSourceSwitch,
+      reportInvalidPath: pipeline.reportInvalidPath,
+      bumpWorkspaceRevision: pipeline.bumpWorkspaceRevision,
+    }
+  })
 
   const workspaceRef = useRef<HTMLDivElement | null>(null)
+  const filesButtonRef = useRef<HTMLButtonElement | null>(null)
   const appShortcutRef = useRef<(action: AppShortcutAction) => void>(() => {})
 
   useEffect(() => {
     const workspace = workspaceRef.current
-    if (!workspace) {
-      return
-    }
+    if (!workspace) return
+    // Observe the actual container, not just sidebar toggles: widths stay valid
+    // across viewport changes while the user's preferred split is retained.
+    const observer = new ResizeObserver(([entry]) => {
+      setWorkspaceWidth(entry.contentRect.width)
+    })
+    observer.observe(workspace)
+    return () => observer.disconnect()
+  }, [])
 
-    const handleWidth = 8
-    const total = workspace.clientWidth
-    const sidebar = isSidebarOpen ? sidebarWidth : 0
-    const handles = isSidebarOpen ? handleWidth * 2 : handleWidth
-    const remaining = Math.max(total - sidebar - handles, 0)
-    const nextEditor = Math.max(360, Math.floor(remaining * 0.55))
-    const nextPreview = Math.max(360, remaining - nextEditor)
-
-    setEditorWidth(nextEditor)
-    setPreviewWidth(nextPreview)
-    // Intentional: this effect re-balances panes on sidebar toggle only, and
-    // must not re-fire while the user drags the sidebar (sidebarWidth changes).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSidebarOpen])
-
-  const saveLabel =
+  const saveLabel = library.storageError ?? (
     library.saveState === 'saving'
       ? 'Saving...'
       : library.saveState === 'dirty'
         ? 'Unsaved changes'
         : 'All changes saved'
+  )
 
   const handleEditorChange = (value: string) => {
     pipeline.notifySourceEdit(value)
@@ -129,8 +142,9 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown, false)
   }, [])
 
-  appShortcutRef.current = (action: AppShortcutAction) => {
-    switch (action) {
+  useLayoutEffect(() => {
+    appShortcutRef.current = (action: AppShortcutAction) => {
+      switch (action) {
       case 'render':
         handleRenderOnce()
         break
@@ -146,8 +160,9 @@ function App() {
       case 'reset-zoom':
         handleZoomReset()
         break
+      }
     }
-  }
+  })
 
   const startResize = (mode: 'sidebar' | 'editor', startX: number) => {
     const workspace = workspaceRef.current
@@ -160,8 +175,8 @@ function App() {
     const handles = isSidebarOpen ? handleWidth * 2 : handleWidth
     const initialSidebar = sidebarWidth
     const initialEditor = editorWidth
-    const minSidebar = 180
-    const minPane = 320
+    const minSidebar = MIN_SIDEBAR_WIDTH
+    const minPane = MIN_PANE_WIDTH
 
     const onMove = (event: MouseEvent) => {
       const delta = event.clientX - startX
@@ -174,11 +189,8 @@ function App() {
         const remaining = total - nextSidebar - handles
         const maxEditor = remaining - minPane
         const nextEditor = Math.min(initialEditor, maxEditor)
-        const nextPreview = remaining - nextEditor
-
         setSidebarWidth(nextSidebar)
-        setEditorWidth(nextEditor)
-        setPreviewWidth(nextPreview)
+        setEditorRatio(nextEditor / remaining)
         return
       }
 
@@ -187,10 +199,7 @@ function App() {
         Math.max(initialEditor + delta, minPane),
         remaining - minPane,
       )
-      const nextPreview = remaining - nextEditor
-
-      setEditorWidth(nextEditor)
-      setPreviewWidth(nextPreview)
+      setEditorRatio(nextEditor / remaining)
     }
 
     const onUp = () => {
@@ -228,8 +237,7 @@ function App() {
         const nextEditor = Math.min(editorWidth, remaining - minPane)
 
         setSidebarWidth(nextSidebar)
-        setEditorWidth(nextEditor)
-        setPreviewWidth(remaining - nextEditor)
+        setEditorRatio(nextEditor / remaining)
         return
       }
 
@@ -239,34 +247,57 @@ function App() {
         max: Math.max(minPane, remaining - minPane),
       })
 
-      setEditorWidth(nextEditor)
-      setPreviewWidth(remaining - nextEditor)
+      setEditorRatio(nextEditor / remaining)
     }
 
-  const workspaceTotal = workspaceRef.current?.clientWidth ?? window.innerWidth
+  const workspaceTotal = workspaceWidth
 
   return (
-    <div className="app">
+    <Tabs className="app dark" value={activePane} onValueChange={setActivePane}>
+      <header className="app-header">
+        <div className="brand"><FileCode2 size={18} aria-hidden="true" /><h1>Typoff</h1><span>Local-first Typst workspace</span></div>
+        <div className="app-header-actions">
+          <Button ref={filesButtonRef} variant="outline" size="sm" onClick={() => isCompact ? setIsFilesSheetOpen(true) : setIsSidebarOpen((prev) => !prev)} aria-expanded={isCompact ? isFilesSheetOpen : isSidebarOpen}>
+            <PanelLeft aria-hidden="true" />{isCompact ? 'Files' : isSidebarOpen ? 'Hide files' : 'Show files'}
+          </Button>
+          {isCompact ? <TabsList aria-label="Workspace view">
+            <TabsTrigger value="editor" id="editor-tab" aria-controls="editor-panel">Editor</TabsTrigger>
+            <TabsTrigger value="preview" id="preview-tab" aria-controls="preview-panel">Preview</TabsTrigger>
+          </TabsList> : <Badge variant="outline">Offline ready</Badge>}
+        </div>
+      </header>
+      <Sheet open={isCompact && isFilesSheetOpen} onOpenChange={setIsFilesSheetOpen}>
+        <SheetContent side="left" className="files-sheet dark" showCloseButton={false}
+          onCloseAutoFocus={(event) => {
+            // The opener lives outside the Sheet to keep the workspace mounted.
+            event.preventDefault()
+            filesButtonRef.current?.focus()
+          }}>
+          <SheetTitle className="sr-only">Workspace files</SheetTitle>
+          <SheetDescription className="sr-only">Create, import, export, rename and select your local Typst files.</SheetDescription>
+          <FileSidebar library={library} exportSvgDisabled={!pipeline.canExportSvg || exportState === 'exporting'} svgExportState={exportState} onExportSvg={handleExportSvg} onHide={() => setIsFilesSheetOpen(false)} />
+        </SheetContent>
+      </Sheet>
       <div
-        className="workspace"
+        className={`workspace ${isCompact ? 'workspace-compact' : 'workspace-desktop'}`}
         ref={workspaceRef}
         style={{
-          gridTemplateColumns: isSidebarOpen
+          gridTemplateColumns: isCompact ? 'minmax(0, 1fr)' : isSidebarOpen
             ? `${sidebarWidth}px 8px ${editorWidth}px 8px ${previewWidth}px`
             : `${editorWidth}px 8px ${previewWidth}px`,
         }}
       >
-        {isSidebarOpen ? (
+        {sidebarVisible ? (
           <FileSidebar
             library={library}
-            exportSvgDisabled={!previewDocument || exportState === 'exporting'}
+            exportSvgDisabled={!pipeline.canExportSvg || exportState === 'exporting'}
             svgExportState={exportState}
             onExportSvg={handleExportSvg}
             onHide={() => setIsSidebarOpen(false)}
           />
         ) : null}
 
-        {isSidebarOpen ? (
+        {sidebarVisible ? (
           <div
             className="resize-handle"
             onMouseDown={(event) => startResize('sidebar', event.clientX)}
@@ -284,20 +315,20 @@ function App() {
           />
         ) : null}
 
-        <section className="editor-pane">
+        <section className="editor-pane" id="editor-panel" role={isCompact ? 'tabpanel' : undefined} aria-labelledby={isCompact ? 'editor-tab' : 'editor-heading'} hidden={isCompact && activePane !== 'editor'}
+          onFocusCapture={(event) => {
+            // Native focus after a hidden tab otherwise resets the DOM range
+            // to offset zero. CodeMirror focus restores its retained selection.
+            if (event.target instanceof HTMLElement && event.target.classList.contains('cm-content')) {
+              EditorView.findFromDOM(event.target)?.focus()
+            }
+          }}>
           <div className="pane-header">
             <div className="pane-title">
-              <button
-                className="ghost"
-                type="button"
-                onClick={() => setIsSidebarOpen((prev) => !prev)}
-              >
-                {isSidebarOpen ? 'Hide files' : 'Show files'}
-              </button>
-              <h2>Editor</h2>
+              <h2 id="editor-heading">Editor</h2>
               <span>{library.activeFile?.name ?? 'No file selected'}</span>
             </div>
-            <span className="pane-status">{saveLabel}</span>
+            <Badge variant="secondary" className="pane-status" role="status">{saveLabel}</Badge>
           </div>
           <div className="pane-body">
             {library.activeFile ? (
@@ -323,7 +354,7 @@ function App() {
                           : ''
                         const path = diagnostic.path.replace(/^\/@memory\//, '') || library.activeFile!.name
                         return (
-                          <button
+                          <Button variant="ghost"
                             className={`error-item ${diagnostic.severity}`}
                             key={`${diagnostic.path}-${diagnostic.rawRange}-${index}`}
                             type="button"
@@ -332,7 +363,7 @@ function App() {
                             <span className="error-severity">{diagnostic.severity}</span>
                             <span className="error-message">{diagnostic.message}</span>
                             <code>{path}{location ? `:${location}` : ''}</code>
-                          </button>
+                          </Button>
                         )
                       })}
                     </div>
@@ -347,7 +378,7 @@ function App() {
           </div>
         </section>
 
-        <div
+        {!isCompact ? <div
           className="resize-handle"
           onMouseDown={(event) => startResize('editor', event.clientX)}
           onKeyDown={handleResizeKeyDown('editor')}
@@ -361,11 +392,13 @@ function App() {
             MIN_PANE_WIDTH,
             workspaceTotal -
               (isSidebarOpen ? sidebarWidth + 16 : 8) -
-              MIN_PANE_WIDTH * 2,
+              MIN_PANE_WIDTH,
           )}
-        />
+        /> : null}
 
         <PreviewPane
+          compact={isCompact}
+          hidden={isCompact && activePane !== 'preview'}
           previewLabel={previewLabel}
           onRenderOnce={handleRenderOnce}
           zoom={zoom}
@@ -383,12 +416,12 @@ function App() {
       {library.undoIntent ? (
         <div className="snackbar" role="status">
           <span>Deleted {library.undoIntent.file.name}</span>
-          <button className="ghost" type="button" onClick={library.handleUndoDelete}>
+          <Button variant="secondary" type="button" onClick={library.handleUndoDelete}>
             Undo
-          </button>
+          </Button>
         </div>
       ) : null}
-    </div>
+    </Tabs>
   )
 }
 

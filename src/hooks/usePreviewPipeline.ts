@@ -9,6 +9,7 @@ import {
   synchronizeRenderTransition,
 } from '../renderVersion'
 import { CursorLookupThrottle } from '../cursorLookup'
+import { isRenderedSourceCurrent, workspaceKey, type RenderedSource } from '../previewEligibility'
 import {
   compileTypstWorkspace,
   disposeTypstWorker,
@@ -67,6 +68,19 @@ export function usePreviewPipeline({
   } | null>(null)
 
   const renderVersionRef = useRef(createRenderVersionGate())
+  const renderedSourceRef = useRef<RenderedSource | null>(null)
+  const currentWorkspace = () => {
+    const id = latestActiveFileIdRef.current
+    if (!id || !latestContentRef.current) return null
+    try {
+      return buildTypstWorkspace(latestFilesRef.current, id, latestContentRef.current)
+    } catch {
+      return null
+    }
+  }
+  const canExportDocument = (documentId: string | undefined) =>
+    isRenderedSourceCurrent(renderedSourceRef.current, renderVersionRef.current,
+      latestActiveFileIdRef.current, currentWorkspace(), documentId)
   const renderTimerRef = useRef<number | null>(null)
   const renderInProgressRef = useRef(false)
   const pendingRenderRef = useRef(false)
@@ -78,18 +92,23 @@ export function usePreviewPipeline({
   }
 
   useEffect(() => {
-    return () => disposeTypstWorker()
+    const gate = renderVersionRef.current
+    return () => {
+      gate.invalidate()
+      pendingRenderRef.current = false
+      disposeTypstWorker()
+    }
   }, [])
 
   const queueRender = (immediate: boolean) => {
-    latestContentRef.current = activeContent
 
     if (renderTimerRef.current) {
       window.clearTimeout(renderTimerRef.current)
       renderTimerRef.current = null
     }
 
-    if (!activeContent || !activeFileId) {
+    if (!latestContentRef.current || !latestActiveFileIdRef.current) {
+      renderedSourceRef.current = null
       setPreviewDocument(null)
       setPreviewState('idle')
       setPreviewError(null)
@@ -123,8 +142,15 @@ export function usePreviewPipeline({
             content,
           )
           const compileStartedAt = performance.now()
+          const compilingSource: RenderedSource = {
+            version: renderVersion,
+            activeFileId: currentActiveFileId,
+            workspaceKey: workspaceKey(workspace),
+            documentId: '',
+          }
           const result = await compileTypstWorkspace(workspace)
-          if (!renderVersionRef.current.isCurrent(renderVersion)) {
+          if (!isRenderedSourceCurrent(compilingSource, renderVersionRef.current,
+            latestActiveFileIdRef.current, currentWorkspace(), '')) {
             return
           }
 
@@ -133,7 +159,10 @@ export function usePreviewPipeline({
           renderRetryCountRef.current = 0
           setDiagnostics(result.diagnostics)
           setPreviewError(null)
-          if (result.documentId && result.pages.length > 0) {
+          if (result.documentId && result.pages.length > 0 &&
+            !result.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
+            renderedSourceRef.current = { ...compilingSource, documentId: result.documentId }
+            setLastPreviewError(null)
             setPreviewDocument({ id: result.documentId, pages: result.pages })
             setPreviewState('idle')
           } else {
@@ -141,7 +170,7 @@ export function usePreviewPipeline({
             // surface the compile failure as a status + error strip.
             setLastPreviewError(
               result.diagnostics.some((d) => d.severity === 'error')
-                ? null
+                ? 'The current source has errors; SVG export is unavailable until it renders successfully.'
                 : 'The document compiled to zero pages',
             )
             setPreviewState('error')
@@ -213,6 +242,8 @@ export function usePreviewPipeline({
   // a file, or deleting the last file): resets scroll state and settles the
   // preview back to idle.
   const beginSourceSwitch = (source: string) => {
+    renderedSourceRef.current = null
+    setLastPreviewError(null)
     cursorLookupRef.current += 1
     setPreviewScrollTarget(null)
     synchronizeRenderTransition({
@@ -234,6 +265,7 @@ export function usePreviewPipeline({
   // Called on every keystroke: keeps the render transition in sync without
   // clearing the current preview document.
   const notifySourceEdit = (value: string) => {
+    setLastPreviewError(value ? 'The source has changed; rendering the current version. SVG export is unavailable.' : null)
     cursorLookupRef.current += 1
     synchronizeRenderTransition({
       gate: renderVersionRef.current,
@@ -255,10 +287,15 @@ export function usePreviewPipeline({
   }
 
   const bumpWorkspaceRevision = () => {
+    renderVersionRef.current.invalidate()
+    cursorLookupRef.current += 1
+    setLastPreviewError('The workspace has changed; rendering the current version. SVG export is unavailable.')
     setWorkspaceRevision((revision) => revision + 1)
   }
 
   const reportInvalidPath = (message: string) => {
+    renderVersionRef.current.invalidate()
+    setLastPreviewError(message)
     setPreviewState('error')
     setPreviewError(message)
   }
@@ -342,7 +379,8 @@ export function usePreviewPipeline({
   }
 
   const handleExportSvg = async () => {
-    if (!previewDocument) {
+    if (!previewDocument || !canExportDocument(previewDocument.id)) {
+      setLastPreviewError('SVG export blocked: the current source has not rendered successfully. The last successful preview is preserved.')
       return
     }
     setExportState('exporting')
@@ -350,7 +388,10 @@ export function usePreviewPipeline({
       const baseName = activeFile
         ? activeFile.name.replace(/\.typ$/i, '')
         : 'document'
-      await exportCurrentDocument(previewDocument.id, baseName)
+      await exportCurrentDocument(previewDocument.id, baseName,
+        () => canExportDocument(previewDocument.id))
+    } catch (error) {
+      setLastPreviewError(error instanceof Error ? error.message : 'SVG export failed')
     } finally {
       setExportState('idle')
     }
@@ -364,6 +405,7 @@ export function usePreviewPipeline({
     lastPreviewError,
     diagnostics,
     exportState,
+    canExportSvg: canExportDocument(previewDocument?.id),
     workspaceRevision,
     previewScrollTarget,
     cursorTarget,

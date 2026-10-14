@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { buildSavePayload } from '../autoSave'
+import { DraftLibrary } from '../draftJournal'
 import { createDeleteIntent, UNDO_WINDOW_MS } from '../deleteUndo'
 import { openTypstFile, saveTypstFile } from '../fileIo'
 import { deleteFile, listFiles, saveFile, type StoredFile } from '../storage'
@@ -60,19 +60,17 @@ export function useFileLibrary({ pipelineBridge }: UseFileLibraryOptions) {
   const [renameDraft, setRenameDraft] = useState('')
   const [undoIntent, setUndoIntent] = useState<UndoIntent | null>(null)
 
-  const suppressSaveRef = useRef(false)
+  const draftsRef = useRef<DraftLibrary | null>(null)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [storageError, setStorageError] = useState<string | null>(null)
   const latestContentRef = useRef('')
   const latestFilesRef = useRef(files)
   const latestActiveFileIdRef = useRef<string | null>(null)
-  const latestActiveFileNameRef = useRef<string | undefined>(undefined)
-  latestFilesRef.current = files
-  latestActiveFileIdRef.current = activeFileId
 
   const activeFile = useMemo(
     () => files.find((file) => file.id === activeFileId) ?? null,
     [files, activeFileId],
   )
-  latestActiveFileNameRef.current = activeFile?.name
   const activeVirtualPath = useMemo(() => {
     if (!activeFile) {
       return ''
@@ -84,50 +82,78 @@ export function useFileLibrary({ pipelineBridge }: UseFileLibraryOptions) {
     }
   }, [activeFile])
 
-  const openFile = (file: StoredFile) => {
+  const openFile = (requested: StoredFile) => {
+    const file = draftsRef.current?.get(requested.id)
+    if (!file) return
     pipelineBridge.current!.beginSourceSwitch(file.content)
-    suppressSaveRef.current = true
+    latestActiveFileIdRef.current = file.id
+    latestContentRef.current = file.content
     setActiveFileId(file.id)
     setActiveContent(file.content)
-    setSaveState('saved')
     setRenamingId(null)
     setRenameDraft('')
+    void draftsRef.current!.flush()
   }
 
   useEffect(() => {
     let isMounted = true
-
-    const loadFiles = async () => {
-      const stored = await listFiles()
-      if (!isMounted) {
-        return
-      }
-
-      if (stored.length === 0) {
-        const initial: StoredFile = {
-          id: createId(),
-          name: 'Welcome.typ',
-          content: DEFAULT_CONTENT,
-          updatedAt: Date.now(),
-        }
-        await saveFile(initial)
-        if (!isMounted) {
-          return
-        }
-        setFiles([initial])
-        openFile(initial)
-        return
-      }
-
-      const sorted = sortFiles(stored)
-      setFiles(sorted)
-      openFile(sorted[0])
+    // A blocked localStorage still permits IndexedDB saving, with unload warning.
+    let journal: Storage
+    try { journal = window.localStorage } catch {
+      journal = { get length(): number { throw new Error('Recovery storage blocked') },
+        key() { return null }, getItem() { throw new Error('Recovery storage blocked') },
+        setItem() { throw new Error('Recovery storage blocked') }, removeItem() {}, clear() {} }
     }
-
-    loadFiles()
-
+    const drafts = new DraftLibrary({ listFiles, saveFile, deleteFile }, journal)
+    draftsRef.current = drafts
+    const unsubscribe = drafts.subscribe(() => {
+      if (!isMounted) return
+      const next = drafts.snapshot()
+      latestFilesRef.current = next
+      setFiles(next)
+      setStorageError(drafts.error)
+      setSaveState(drafts.saving ? 'saving' : drafts.dirty ? 'dirty' : 'saved')
+    })
+    let loading = false
+    const load = async () => {
+      if (loading) return
+      loading = true
+      try {
+        const workspaceChanged = await drafts.load()
+        if (!isMounted) return
+        if (workspaceChanged && latestActiveFileIdRef.current) {
+          // Recovered dependencies can fix a failed include without changing the
+          // active id/source. Use the existing revision-driven render scheduling.
+          pipelineBridge.current!.bumpWorkspaceRevision()
+        }
+        if (!drafts.snapshot().length && !drafts.loaded) return
+        if (!drafts.snapshot().length && drafts.error) return
+        if (!drafts.snapshot().length) {
+          drafts.put({ id: createId(), name: 'Welcome.typ', content: DEFAULT_CONTENT, updatedAt: Date.now() })
+        }
+        // A user may have created/edited a file while startup was unavailable.
+        // Reconcile the sidebar without replacing their current editor/selection.
+        if (!latestActiveFileIdRef.current) openFile(drafts.snapshot()[0])
+      } catch (error) {
+        if (isMounted) setStorageError(`Could not load local files: ${String(error)}`)
+      } finally { loading = false }
+    }
+    void load()
+    const retry = window.setInterval(() => {
+      if (!drafts.loaded) void load()
+      if (drafts.dirty) void drafts.flush()
+    }, 5000)
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (drafts.needsUnloadWarning) { event.preventDefault(); event.returnValue = '' }
+    }
+    window.addEventListener('beforeunload', beforeUnload)
     return () => {
       isMounted = false
+      unsubscribe()
+      window.clearInterval(retry)
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      window.removeEventListener('beforeunload', beforeUnload)
+      void drafts.flush()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -144,40 +170,9 @@ export function useFileLibrary({ pipelineBridge }: UseFileLibraryOptions) {
     return () => window.clearTimeout(handle)
   }, [undoIntent])
 
-  useEffect(() => {
-    if (!activeFileId) {
-      return
-    }
-
-    if (suppressSaveRef.current) {
-      suppressSaveRef.current = false
-      return
-    }
-
-    const handle = window.setTimeout(async () => {
-      const next = buildSavePayload({
-        activeFileId: latestActiveFileIdRef.current,
-        latestName: latestActiveFileNameRef.current,
-        latestContentRef,
-      })
-      if (!next) {
-        return
-      }
-      setSaveState('saving')
-      await saveFile(next)
-      setFiles((prev) => {
-        const updated = prev.filter((file) => file.id !== next.id)
-        return sortFiles([...updated, next])
-      })
-      setSaveState('saved')
-    }, 500)
-
-    return () => window.clearTimeout(handle)
-  }, [activeContent, activeFileId, activeFile?.name])
-
   const createFile = async () => {
     const baseName = 'Untitled'
-    const existingNames = new Set(files.map((file) => file.name))
+    const existingNames = new Set(latestFilesRef.current.map((file) => file.name))
     let index = 1
     let name = `${baseName}.typ`
     while (existingNames.has(name)) {
@@ -192,8 +187,7 @@ export function useFileLibrary({ pipelineBridge }: UseFileLibraryOptions) {
       updatedAt: Date.now(),
     }
 
-    await saveFile(next)
-    setFiles((prev) => sortFiles([...prev, next]))
+    draftsRef.current!.put(next)
     openFile(next)
   }
 
@@ -228,8 +222,7 @@ export function useFileLibrary({ pipelineBridge }: UseFileLibraryOptions) {
       updatedAt: Date.now(),
     }
 
-    await saveFile(next)
-    setFiles((prev) => sortFiles([...prev, next]))
+    draftsRef.current!.put(next)
     openFile(next)
   }
 
@@ -252,7 +245,7 @@ export function useFileLibrary({ pipelineBridge }: UseFileLibraryOptions) {
       return
     }
 
-    const target = files.find((file) => file.id === renamingId)
+    const target = draftsRef.current?.get(renamingId)
     if (!target || target.name === trimmed) {
       setRenamingId(null)
       setRenameDraft('')
@@ -261,7 +254,7 @@ export function useFileLibrary({ pipelineBridge }: UseFileLibraryOptions) {
 
     try {
       const nextPath = toTypstVirtualPath(trimmed)
-      const duplicate = files.some(
+      const duplicate = latestFilesRef.current.some(
         (file) => file.id !== target.id && toTypstVirtualPath(file.name) === nextPath,
       )
       if (duplicate) {
@@ -275,52 +268,40 @@ export function useFileLibrary({ pipelineBridge }: UseFileLibraryOptions) {
     }
 
     const updated = { ...target, name: trimmed, updatedAt: Date.now() }
-    await saveFile(updated)
-    setFiles((prev) =>
-      sortFiles(prev.map((file) => (file.id === updated.id ? updated : file))),
-    )
+    draftsRef.current!.put(updated)
+    void draftsRef.current!.flush()
     pipelineBridge.current!.bumpWorkspaceRevision()
     setRenamingId(null)
     setRenameDraft('')
   }
 
-  const handleDelete = async (file: StoredFile) => {
-    // Capture the intent BEFORE deleting so Undo can restore this exact file.
-    // Replacing a pending intent permanently deletes the previously deleted
-    // file — only the most recent delete is undoable.
+  const handleDelete = async (requested: StoredFile) => {
+    const file = draftsRef.current?.remove(requested.id)
+    if (!file) return
     setUndoIntent(createDeleteIntent(file))
-
-    await deleteFile(file.id)
-    setFiles((prev) => prev.filter((item) => item.id !== file.id))
     pipelineBridge.current!.bumpWorkspaceRevision()
-
-    if (file.id === activeFileId) {
-      const remaining = files.filter((item) => item.id !== file.id)
-      if (remaining.length > 0) {
-        openFile(sortFiles(remaining)[0])
-      } else {
+    if (file.id === latestActiveFileIdRef.current) {
+      const remaining = draftsRef.current!.snapshot()
+      if (remaining.length) openFile(remaining[0])
+      else {
         pipelineBridge.current!.beginSourceSwitch('')
+        latestActiveFileIdRef.current = null
+        latestContentRef.current = ''
         setActiveFileId(null)
         setActiveContent('')
       }
     }
+    await draftsRef.current!.flush()
   }
 
   const handleUndoDelete = async () => {
-    if (!undoIntent) {
-      return
-    }
-
+    if (!undoIntent) return
     const { file } = undoIntent
     setUndoIntent(null)
-    // saveFile upserts (idb put), so re-inserting restores the file.
-    await saveFile(file)
-    setFiles((prev) =>
-      sortFiles([...prev.filter((item) => item.id !== file.id), file]),
-    )
-    if (!latestActiveFileIdRef.current) {
-      openFile(file)
-    }
+    draftsRef.current!.put(file)
+    pipelineBridge.current!.bumpWorkspaceRevision()
+    if (!latestActiveFileIdRef.current) openFile(file)
+    await draftsRef.current!.flush()
   }
 
   const startRename = (file: StoredFile) => {
@@ -334,10 +315,14 @@ export function useFileLibrary({ pipelineBridge }: UseFileLibraryOptions) {
   }
 
   const changeActiveContent = (value: string) => {
+    const id = latestActiveFileIdRef.current
+    const file = id ? draftsRef.current?.get(id) : null
+    if (!file) return
+    latestContentRef.current = value
     setActiveContent(value)
-    if (saveState !== 'dirty') {
-      setSaveState('dirty')
-    }
+    draftsRef.current!.put({ ...file, content: value, updatedAt: Date.now() })
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => { void draftsRef.current?.flush() }, 500)
   }
 
   const openDiagnosticFile = (diagnostic: TypstDiagnostic) => {
@@ -361,6 +346,8 @@ export function useFileLibrary({ pipelineBridge }: UseFileLibraryOptions) {
     activeFile,
     activeVirtualPath,
     saveState,
+    storageError,
+    retrySave: () => draftsRef.current?.flush(),
     renamingId,
     renameDraft,
     undoIntent,

@@ -1,0 +1,187 @@
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import { chromium } from 'playwright'
+
+// Standalone UI regression: npm run dev, then node scripts/verify-responsive.mjs.
+// Fresh browser storage only. Native open picker is stubbed at its OS boundary;
+// source and SVG exports are checked through real browser downloads.
+const browser = await chromium.launch({ headless: true })
+try {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+  const errors = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await page.goto(process.env.TYPOFF_URL ?? 'http://127.0.0.1:5173')
+  const editor = page.locator('.cm-content')
+  await editor.waitFor()
+  await page.locator('.preview-surface').first().waitFor({ timeout: 60000 })
+  await editor.evaluate((element) => { window.__uiEditor = element })
+  const originalFile = await page.locator('.editor-pane .pane-title > span').textContent()
+
+  for (const width of [1440, 1280, 1101, 1100, 1024, 768, 390, 320, 1440]) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.waitForTimeout(150)
+    const bounds = await page.locator('.editor-pane').boundingBox()
+    assert.ok(bounds && bounds.width >= 320, `Editor collapsed at ${width}: ${JSON.stringify(bounds)}`)
+    assert.ok(bounds.x + bounds.width <= width + 1, `Editor overflow at ${width}`)
+    assert.equal(await editor.evaluate((element) => element === window.__uiEditor), true, `Editor remounted at ${width}`)
+    assert.equal(await page.locator('.editor-pane .pane-title > span').textContent(), originalFile)
+    assert.equal(await page.getByRole('separator').count(), width <= 1100 ? 0 : 2)
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+    if (width <= 1100) {
+      await page.getByRole('tab', { name: 'Preview', exact: true }).click()
+      const preview = await page.locator('.preview-pane').boundingBox()
+      assert.ok(preview && preview.width === width && preview.y + preview.height <= 901)
+      await page.getByRole('button', { name: 'Files', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: 'Workspace files' })
+      await dialog.waitFor()
+      await page.waitForFunction(() => document.querySelector('[role="dialog"]')?.getBoundingClientRect().x >= 0)
+      for (const name of ['New file', 'Import', 'Export', 'SVG']) {
+        const control = await dialog.getByRole('button', { name, exact: true }).boundingBox()
+        assert.ok(control && control.x >= 0 && control.x + control.width <= width, `${name} unreachable at ${width}`)
+      }
+      await page.keyboard.press('Escape')
+      await dialog.waitFor({ state: 'hidden' })
+      await page.getByRole('tab', { name: 'Editor', exact: true }).click()
+    }
+    console.log(`PASS ${width}px layout, file identity, mounted editor, preview and file actions`)
+  }
+
+  await page.setViewportSize({ width: 390, height: 900 })
+  const filesButton = page.getByRole('button', { name: 'Files', exact: true })
+  const filesDialog = page.getByRole('dialog', { name: 'Workspace files' })
+  for (const closeAction of ['Escape', 'Hide files']) {
+    await filesButton.focus()
+    assert.equal(await filesButton.evaluate((element) => document.activeElement === element), true)
+    await page.keyboard.press('Enter')
+    await filesDialog.waitFor()
+    await page.waitForFunction(() => document.querySelector('[role="dialog"]')?.contains(document.activeElement))
+    if (closeAction === 'Escape') {
+      await page.keyboard.press('Escape')
+    } else {
+      await filesDialog.getByRole('button', { name: 'Hide files', exact: true }).focus()
+      await page.keyboard.press('Enter')
+    }
+    await filesDialog.waitFor({ state: 'hidden' })
+    await page.waitForFunction(() => document.activeElement?.textContent === 'Files')
+    assert.equal(await filesButton.evaluate((element) => document.activeElement === element), true, `${closeAction} did not restore focus to Files`)
+    assert.equal(await filesButton.getAttribute('aria-expanded'), 'false')
+    assert.equal(await editor.evaluate((element) => element === window.__uiEditor), true, `${closeAction} remounted the editor`)
+  }
+  console.log('PASS 390px keyboard Files opening and focus restoration after Escape and Hide files')
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.getByRole('separator', { name: 'Resize editor preview split' }).waitFor()
+
+  const split = page.getByRole('separator', { name: 'Resize editor preview split' })
+  const beforeResize = Number(await split.getAttribute('aria-valuenow'))
+  await split.focus()
+  await page.keyboard.press('ArrowRight')
+  assert.ok(Number(await split.getAttribute('aria-valuenow')) > beforeResize)
+  const drag = await split.boundingBox()
+  await page.mouse.move(drag.x + 4, drag.y + 100)
+  await page.mouse.down()
+  await page.mouse.move(drag.x - 40, drag.y + 100)
+  await page.mouse.up()
+  assert.ok(Number(await split.getAttribute('aria-valuenow')) < beforeResize)
+  await page.getByRole('button', { name: 'Hide files', exact: true }).first().click()
+  assert.equal(await page.getByRole('separator').count(), 1)
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.waitForTimeout(150)
+  const noSidebarPreview = await page.locator('.preview-pane').boundingBox()
+  assert.ok(noSidebarPreview.x + noSidebarPreview.width <= 1281)
+  await page.getByRole('button', { name: 'Show files', exact: true }).click()
+  console.log('PASS mouse/keyboard resizing, hidden-sidebar viewport rebalance')
+
+  const source = '// cursor position sentinel\n#set page(width: 400pt, height: 500pt)\n= Responsive test\n' + 'A paragraph for scrolling.\n\n'.repeat(90)
+  const initialSrc = await page.locator('.preview-surface').first().getAttribute('src')
+  await editor.fill(source)
+  await page.waitForFunction((oldSrc) => document.querySelector('.preview-surface')?.getAttribute('src') !== oldSrc && document.querySelector('.preview-pane [role="status"]')?.textContent?.startsWith('Preview ready'), initialSrc, { timeout: 60000 })
+  await page.waitForTimeout(700) // Let existing autosave settle; persistence races are phase 2.
+  await editor.focus()
+  await page.keyboard.press('Control+Home')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('Shift+ArrowRight')
+  await page.keyboard.press('Shift+ArrowRight')
+  await page.keyboard.press('Shift+ArrowRight')
+  assert.equal(await page.evaluate(() => getSelection()?.toString()), 'cur')
+  await page.setViewportSize({ width: 390, height: 900 })
+  await page.waitForTimeout(150)
+  await page.locator('.cm-scroller').evaluate((element) => { element.scrollTop = 300 })
+  const scroll = await page.locator('.cm-scroller').evaluate((element) => element.scrollTop)
+  await page.getByRole('tab', { name: 'Preview', exact: true }).click()
+  await page.getByRole('tab', { name: 'Editor', exact: true }).focus()
+  await page.keyboard.press('ArrowRight') // Radix roving-focus navigation selects Preview.
+  await page.locator('#preview-tab[aria-selected="true"]').waitFor()
+  assert.equal(await page.getByRole('tab', { name: 'Preview', exact: true }).getAttribute('aria-selected'), 'true')
+  await page.keyboard.press('ArrowLeft')
+  await page.locator('#editor-tab[aria-selected="true"]').waitFor()
+  assert.equal(await page.getByRole('tab', { name: 'Editor', exact: true }).getAttribute('aria-selected'), 'true')
+  assert.equal(await page.locator('.cm-scroller').evaluate((element) => element.scrollTop), scroll)
+  await editor.focus()
+  await page.waitForTimeout(100)
+  assert.equal(await page.evaluate(() => getSelection()?.toString()), 'cur')
+  const beforeCommentEdit = await page.locator('.preview-surface').first().getAttribute('src')
+  await page.keyboard.insertText('XYZ')
+  await page.keyboard.press('Control+Home')
+  assert.equal(await page.locator('.cm-line').first().textContent(), '// XYZsor position sentinel')
+  await page.getByRole('tab', { name: 'Preview', exact: true }).click()
+  await page.waitForFunction((oldSrc) => document.querySelector('.preview-surface')?.getAttribute('src') !== oldSrc && document.querySelector('.preview-pane [role="status"]')?.textContent?.startsWith('Preview ready'), beforeCommentEdit, { timeout: 60000 })
+  console.log('PASS tab keyboard navigation, selection and scroll retained across breakpoints/tabs')
+
+  await page.getByRole('tab', { name: 'Preview', exact: true }).click()
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click()
+  assert.equal(await page.getByRole('button', { name: '110%', exact: true }).count(), 1)
+  await page.keyboard.press('Control+0')
+  assert.equal(await page.getByRole('button', { name: '100%', exact: true }).count(), 1)
+  await page.getByRole('tab', { name: 'Editor', exact: true }).click()
+  await editor.fill('#ui_missing_function()')
+  await page.getByRole('region', { name: 'Typst diagnostics' }).waitFor({ timeout: 60000 })
+  await page.locator('.error-item').first().click()
+  await page.getByRole('tab', { name: 'Preview', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('.preview-pane [role="status"]')?.textContent === 'Preview error')
+  assert.ok(await page.locator('.preview-surface').count() > 0)
+  console.log('PASS zoom/shortcut, clickable diagnostics and last-good preview retained on compile error')
+
+  await page.evaluate(() => {
+    window.showOpenFilePicker = async () => [{ getFile: async () => new File(['= Imported UI test\nHello.'], 'ui-import.typ', { type: 'text/plain' }) }]
+    window.showSaveFilePicker = undefined
+  })
+  await page.getByRole('button', { name: 'Files', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Workspace files' })
+  await dialog.getByRole('button', { name: 'Import', exact: true }).click()
+  await dialog.getByRole('button', { name: 'ui-import.typ', exact: true }).waitFor()
+  await page.waitForTimeout(800)
+  const sourceDownloadPromise = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: 'Export', exact: true }).click()
+  const sourceDownload = await sourceDownloadPromise
+  assert.equal(sourceDownload.suggestedFilename(), 'ui-import.typ')
+  assert.equal(await readFile(await sourceDownload.path(), 'utf8'), '= Imported UI test\nHello.')
+  await page.keyboard.press('Escape')
+  await dialog.waitFor({ state: 'hidden' })
+  await page.locator('.preview-surface').first().waitFor({ timeout: 60000 })
+  await page.getByRole('button', { name: 'Files', exact: true }).click()
+  await page.waitForFunction(() => ![...document.querySelectorAll('[role="dialog"] button')].find((button) => button.textContent === 'SVG')?.disabled)
+  const svgDownloadPromise = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: 'SVG', exact: true }).click()
+  const svgDownload = await svgDownloadPromise
+  assert.match(await readFile(await svgDownload.path(), 'utf8'), /<svg/)
+  await dialog.getByRole('button', { name: 'Rename ui-import.typ', exact: true }).click()
+  await dialog.getByRole('textbox', { name: 'Rename ui-import.typ', exact: true }).fill('ui-renamed.typ')
+  await page.keyboard.press('Enter')
+  await dialog.getByRole('button', { name: 'ui-renamed.typ', exact: true }).waitFor()
+  await dialog.getByRole('button', { name: 'Delete ui-renamed.typ', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await dialog.waitFor({ state: 'hidden' })
+  await page.getByRole('button', { name: 'Undo', exact: true }).click()
+  await page.getByRole('button', { name: 'Files', exact: true }).click()
+  await dialog.getByRole('button', { name: 'ui-renamed.typ', exact: true }).waitFor()
+  await dialog.getByRole('button', { name: 'New file', exact: true }).click()
+  await dialog.getByRole('button', { name: 'Untitled.typ', exact: true }).waitFor()
+  console.log('PASS mobile import (mock OS picker), real source/SVG downloads, rename, delete/undo, new file')
+
+  assert.deepEqual(errors, [])
+  console.log('PASS no uncaught browser errors')
+} finally {
+  await browser.close()
+}

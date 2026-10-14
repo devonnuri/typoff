@@ -84,7 +84,11 @@ export function downloadSvgPages(
 export async function exportCurrentDocument(
   documentId: string,
   baseName: string,
+  isEligible: () => boolean = () => true,
 ): Promise<void> {
+  if (!isEligible()) throw new Error('SVG export requires a successful render of the current source')
   const pages = await exportTypstPages(documentId)
+  // Source/workspace can change while the worker is rendering export pages.
+  if (!isEligible()) throw new Error('SVG export cancelled because the source changed')
   downloadSvgPages(pages, baseName)
 }

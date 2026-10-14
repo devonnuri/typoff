@@ -1,10 +1,13 @@
 import { VirtualPreview } from '../VirtualPreview'
+import { Button } from './ui/button'
 import type {
   PreviewDocument,
   PreviewState,
 } from '../hooks/usePreviewPipeline'
 
 interface PreviewPaneProps {
+  compact?: boolean
+  hidden?: boolean
   previewLabel: string
   onRenderOnce: () => void
   zoom: number
@@ -26,6 +29,8 @@ interface PreviewPaneProps {
 }
 
 export function PreviewPane({
+  compact = false,
+  hidden = false,
   previewLabel,
   onRenderOnce,
   zoom,
@@ -40,18 +45,17 @@ export function PreviewPane({
   onPageClick,
 }: PreviewPaneProps) {
   return (
-    <section className="preview-pane">
+    <section className="preview-pane" id="preview-panel" hidden={hidden} role={compact ? 'tabpanel' : undefined} aria-labelledby={compact ? 'preview-tab' : 'preview-heading'}>
       <div className="pane-header">
         <div className="pane-title">
-          <h2>Preview</h2>
-          <span>{previewLabel}</span>
+          <h2 id="preview-heading">Preview</h2>
+          <span role="status">{previewLabel}</span>
         </div>
         <div className="pane-actions">
-          <button className="ghost" type="button" onClick={onRenderOnce}>
+          <Button variant="secondary" size="sm" type="button" onClick={onRenderOnce}>
             Render
-          </button>
-          <button
-            className="icon-button"
+          </Button>
+          <Button variant="ghost" size="icon-sm"
             type="button"
             onClick={onZoomOut}
             disabled={zoom <= 0.5}
@@ -66,16 +70,14 @@ export function PreviewPane({
                 strokeLinecap="square"
               />
             </svg>
-          </button>
-          <button
-            className="ghost"
+          </Button>
+          <Button variant="ghost" size="sm"
             type="button"
             onClick={onZoomReset}
           >
             {Math.round(zoom * 100)}%
-          </button>
-          <button
-            className="icon-button"
+          </Button>
+          <Button variant="ghost" size="icon-sm"
             type="button"
             onClick={onZoomIn}
             disabled={zoom >= 2}
@@ -90,7 +92,7 @@ export function PreviewPane({
                 strokeLinecap="square"
               />
             </svg>
-          </button>
+          </Button>
         </div>
       </div>
       <div className="pane-body preview-body">
@@ -107,9 +109,9 @@ export function PreviewPane({
             ) : (
               <span>See the highlighted source and Problems pane.</span>
             )}
-            <button className="ghost" type="button" onClick={onRenderOnce}>
+            <Button variant="outline" type="button" onClick={onRenderOnce}>
               Retry render
-            </button>
+            </Button>
           </div>
         ) : previewDocument ? (
           <VirtualPreview
@@ -121,7 +123,12 @@ export function PreviewPane({
           />
         ) : (
           <div className="empty-state">
-            <p>Your Typst preview will appear here.</p>
+            {previewState === 'rendering' ? (
+              <div role="status">
+                <p>Preparing the Typst preview…</p>
+                <p>The first render loads the compiler and fonts. You can keep editing; after offline assets finish caching, they work without a connection.</p>
+              </div>
+            ) : <p>Your Typst preview will appear here.</p>}
           </div>
         )}
       </div>
