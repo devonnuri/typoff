@@ -133,6 +133,24 @@ describe('downloadSvgPages', () => {
 })
 
 describe('exportCurrentDocument', () => {
+  it('blocks a stale export before sending work to the worker', async () => {
+    const dom = installDomMocks()
+    await expect(exportCurrentDocument('old-doc', 'Thesis', () => false)).rejects.toThrow(/current source/)
+    expect(exportTypstPagesMock).not.toHaveBeenCalled()
+    expect(dom.anchors).toHaveLength(0)
+  })
+
+  it('cancels download if the source changes while export is queued', async () => {
+    const dom = installDomMocks()
+    let eligible = true
+    let resolvePages!: (pages: { pageIndex: number; svg: string }[]) => void
+    exportTypstPagesMock.mockImplementation(() => new Promise((resolve) => { resolvePages = resolve }))
+    const exportPromise = exportCurrentDocument('doc-7', 'Thesis', () => eligible)
+    eligible = false
+    resolvePages([{ pageIndex: 0, svg: '<svg />' }])
+    await expect(exportPromise).rejects.toThrow(/source changed/)
+    expect(dom.anchors).toHaveLength(0)
+  })
   it('renders every page via the worker and downloads the result', async () => {
     exportTypstPagesMock.mockResolvedValue([
       { pageIndex: 0, svg: '<svg id="one" />' },

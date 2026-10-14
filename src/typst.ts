@@ -200,6 +200,7 @@ export function createTypstWorkerClient(
 }
 
 let workerClient: ReturnType<typeof createTypstWorkerClient> | undefined
+let workerGeneration = 0
 let consecutiveFatalErrors = 0
 
 const defaultWorkerFactory = (): TypstWorkerLike =>
@@ -245,10 +246,41 @@ function getWorkerClient() {
   return workerClient
 }
 
+let compilerCacheWarmup: Promise<void> | undefined
+
+/** Let the production SW's precache own the first WASM download instead of
+ * racing it with a second 28 MB worker fetch. Never block the editor, and bound
+ * the wait so a failed/unsupported SW cannot make online compilation hang. */
+function waitForCompilerCache() {
+  if (!import.meta.env.PROD || typeof navigator === 'undefined' ||
+    !('serviceWorker' in navigator) || navigator.serviceWorker.controller) return
+  compilerCacheWarmup ??= new Promise<void>((resolve) => {
+    const serviceWorker = navigator.serviceWorker
+    const finish = () => {
+      clearTimeout(timeout)
+      serviceWorker.removeEventListener('controllerchange', onControllerChange)
+      resolve()
+    }
+    const onControllerChange = () => { if (serviceWorker.controller) finish() }
+    const timeout = setTimeout(finish, 8000)
+    serviceWorker.addEventListener('controllerchange', onControllerChange)
+    void serviceWorker.ready.then(onControllerChange, finish)
+    onControllerChange()
+  })
+  return compilerCacheWarmup
+}
+
 export function compileTypstWorkspace(
   workspace: TypstWorkspace,
 ): Promise<TypstCompileResult> {
-  return getWorkerClient().compile(workspace)
+  const warmup = waitForCompilerCache()
+  const generation = workerGeneration
+  return warmup
+    ? warmup.then(() => {
+      if (generation !== workerGeneration) throw new Error('Typst preview worker was disposed')
+      return getWorkerClient().compile(workspace)
+    })
+    : getWorkerClient().compile(workspace)
 }
 
 export function renderTypstPage(
@@ -289,12 +321,14 @@ export function locateSourceOffset(
 }
 
 export function disposeTypstWorker() {
+  workerGeneration += 1
   workerClient?.dispose()
   workerClient = undefined
 }
 
 export function resetTypstWorkerForTest() {
   disposeTypstWorker()
+  compilerCacheWarmup = undefined
   consecutiveFatalErrors = 0
   workerFactory = defaultWorkerFactory
 }
